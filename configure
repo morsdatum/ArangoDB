@@ -7347,12 +7347,23 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 #ifdef __cplusplus
 extern "C"
 #endif
-char sincos ();
+/*char sincos ();*/
+#include <math.h>
+#include <stdlib.h>
+#if defined(__clang__)
+#else
+void sincos(double , double *,double *);
+#endif
 int
 main ()
 {
-return sincos ();
-  ;
+  double i = 0.5f;
+#if defined(__clang__)
+  sin(i);
+#else
+ sincos (i,NULL,NULL);
+#endif
+  
   return 0;
 }
 _ACEOF
