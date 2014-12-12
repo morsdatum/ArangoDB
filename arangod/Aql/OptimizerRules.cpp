@@ -53,9 +53,9 @@ using EN   = triagens::aql::ExecutionNode;
 /// - sorts that are covered by earlier sorts will be removed
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::removeRedundantSorts (Optimizer* opt, 
-                                         ExecutionPlan* plan,
-                                         Optimizer::Rule const* rule) { 
+int triagens::aql::removeRedundantSortsRule (Optimizer* opt, 
+                                             ExecutionPlan* plan,
+                                             Optimizer::Rule const* rule) { 
   std::vector<ExecutionNode*> nodes = plan->findNodesOfType(EN::SORT, true);
   std::unordered_set<ExecutionNode*> toUnlink;
 
@@ -246,6 +246,49 @@ int triagens::aql::removeUnnecessaryFiltersRule (Optimizer* opt,
   
   if (! toUnlink.empty()) {
     plan->unlinkNodes(toUnlink);
+    plan->findVarUsage();
+  }
+  
+  opt->addPlan(plan, rule->level, modified);
+
+  return TRI_ERROR_NO_ERROR;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief remove INTO of a COLLECT if not used
+////////////////////////////////////////////////////////////////////////////////
+
+int triagens::aql::removeCollectIntoRule (Optimizer* opt, 
+                                          ExecutionPlan* plan, 
+                                          Optimizer::Rule const* rule) {
+  bool modified = false;
+  std::unordered_set<ExecutionNode*> toUnlink;
+  // should we enter subqueries??
+  std::vector<ExecutionNode*> nodes = plan->findNodesOfType(EN::AGGREGATE, true);
+  
+  for (auto n : nodes) {
+    auto collectNode = static_cast<AggregateNode*>(n);
+    TRI_ASSERT(collectNode != nullptr);
+
+    auto outVariable = collectNode->outVariable();
+
+    if (outVariable == nullptr) {
+      // no out variable. nothing to do
+      continue;
+    }
+
+    auto varsUsedLater = n->getVarsUsedLater();
+    if (varsUsedLater.find(outVariable) != varsUsedLater.end()) {
+      // outVariable is used later
+      continue;
+    }
+
+    // outVariable is not used later. remove it!
+    collectNode->clearOutVariable();
+    modified = true;
+  }
+  
+  if (modified) {
     plan->findVarUsage();
   }
   
@@ -778,29 +821,43 @@ int triagens::aql::removeUnnecessaryCalculationsRule (Optimizer* opt,
 ////////////////////////////////////////////////////////////////////////////////
 
 class FilterToEnumCollFinder : public WalkerWorker<ExecutionNode> {
-  RangesInfo* _ranges;
-  Optimizer* _opt;
   ExecutionPlan* _plan;
-  std::unordered_set<VariableId> _varIds;
   bool _canThrow; 
-  Optimizer::RuleLevel _level;
+  bool _modified;
+  std::unordered_set<VariableId> _varIds;
+  RangesInfo* _ranges;
+  // The following maps ids of EnumerateCollectionNodes in the original
+  // plan to an index in the (outer vector) of the _changes container.
+  std::unordered_map<size_t, size_t>& _changesPlaces;
+  // The outer vector is for the different ids of EnumerateCollectionNodes
+  // in the original plan that could be replaced. For each one, the pair
+  // contains the id of the node in the original plan and a vector 
+  // that holds the possible replacements.
+  std::vector<std::pair<size_t, std::vector<ExecutionNode*>>>& _changes;
   
   public:
 
-    FilterToEnumCollFinder (Optimizer* opt,
-                            ExecutionPlan* plan,
-                            Variable const* var,
-                            Optimizer::RuleLevel level) 
-      : _opt(opt),
-        _plan(plan), 
+    FilterToEnumCollFinder (ExecutionPlan* plan,
+          Variable const* var,
+          std::unordered_map<size_t, size_t>& changesPlaces,
+          std::vector<std::pair<size_t, std::vector<ExecutionNode*>>>& changes) 
+      : _plan(plan), 
         _canThrow(false),
-        _level(level) {
-      _ranges = new RangesInfo();
+        _modified(false),
+        _varIds(),
+        _ranges(new RangesInfo()),
+        _changesPlaces(changesPlaces),
+        _changes(changes) {
+
       _varIds.insert(var->id);
     };
 
     ~FilterToEnumCollFinder () {
       delete _ranges;
+    }
+
+    bool modified () {
+      return _modified;
     }
 
     bool before (ExecutionNode* en) override final {
@@ -926,19 +983,12 @@ class FilterToEnumCollFinder : public WalkerWorker<ExecutionNode> {
                
             if (! _canThrow) {
               if (! valid) { // ranges are not valid . . . 
-                auto newPlan = _plan->clone();
-                try {
-                  auto parents = newPlan->getNodeById(node->id())->getParents();
-                  for (auto x: parents) {
-                    auto noRes = new NoResultsNode(newPlan, newPlan->nextId());
-                    newPlan->registerNode(noRes);
-                    newPlan->insertDependency(x, noRes);
-                    _opt->addPlan(newPlan, _level, true);
-                  }
-                }
-                catch (...) {
-                  delete newPlan;
-                  throw;
+                auto parents = node->getParents();
+                for (auto x : parents) {
+                  auto noRes = new NoResultsNode(_plan, _plan->nextId());
+                  _plan->registerNode(noRes);
+                  _plan->insertDependency(x, noRes);
+                  _modified = true;
                 }
               }
               else {
@@ -1044,25 +1094,21 @@ class FilterToEnumCollFinder : public WalkerWorker<ExecutionNode> {
                   }
                   
                   if (! rangeInfo.at(0).empty()) {
-                    auto newPlan = _plan->clone();
-                    if (newPlan == nullptr) {
-                      THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+                    std::unique_ptr<ExecutionNode> newNode
+                      (new IndexRangeNode(_plan, 
+                          _plan->nextId(), node->vocbase(), node->collection(), 
+                          node->outVariable(), idx, rangeInfo, false));
+                    size_t place = node->id();
+                    std::unordered_map<size_t, size_t>::iterator it 
+                         = _changesPlaces.find(place);
+                    if (it == _changesPlaces.end()) {
+                      _changes.push_back(std::make_pair(place, std::vector<ExecutionNode*>()));
+                      it = _changesPlaces.emplace(place, _changes.size()-1).first;
                     }
-
-                    try {
-                      ExecutionNode* newNode = new IndexRangeNode(newPlan, newPlan->nextId(), node->vocbase(), 
-                        node->collection(), node->outVariable(), idx, rangeInfo, false);
-                      newPlan->registerNode(newNode);
-                      newPlan->replaceNode(newPlan->getNodeById(node->id()), newNode);
-                      // re-inject the new plan with the previous rule so it gets passed through
-                      // use-index-range optimization again
-                      // this allows to enable even more indexes
-                      _opt->addPlan(newPlan, Optimizer::previousRule(_level), true);
-                    }
-                    catch (...) {
-                      delete newPlan;
-                      throw;
-                    }
+                    std::vector<ExecutionNode*>& vec = _changes[it->second].second;
+                    vec.push_back(newNode.release());
+                    // if all goes well, this node will be used, if an 
+                    // exception happens, the destructor will free it
                   }
                 }
               }
@@ -1221,27 +1267,192 @@ class FilterToEnumCollFinder : public WalkerWorker<ExecutionNode> {
       attr.clear();
       enumCollVar = nullptr;
     }
+
+    bool enterSubquery (ExecutionNode* super, ExecutionNode* sub) final {
+      return false;
+    }
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief useIndexRange, try to use an index for filtering
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::useIndexRange (Optimizer* opt, 
-                                  ExecutionPlan* plan, 
-                                  Optimizer::Rule const* rule) {
+int triagens::aql::useIndexRangeRule (Optimizer* opt, 
+                                      ExecutionPlan* plan, 
+                                      Optimizer::Rule const* rule) {
   
-  std::vector<ExecutionNode*> nodes
-    = plan->findNodesOfType(EN::FILTER, true);
-  
-  for (auto n : nodes) {
-    auto nn = static_cast<FilterNode*>(n);
-    auto invars = nn->getVariablesUsedHere();
-    TRI_ASSERT(invars.size() == 1);
-    FilterToEnumCollFinder finder(opt, plan, invars[0], rule->level);
-    nn->walk(&finder);
+  // The following maps ids of EnumerateCollectionNodes in the original
+  // plan to an index in the (outer vector) of the _changes container.
+  std::unordered_map<size_t, size_t> changesPlaces;
+  // The outer vector is for the different ids of EnumerateCollectionNodes
+  // in the original plan that could be replaced. For each one, the pair
+  // contains the id of the node in the original plan and a vector 
+  // that holds the possible replacements.
+  std::vector<std::pair<size_t, std::vector<ExecutionNode*>>> changes;
+
+  auto cleanupChanges = [&] () -> void {
+    for (auto& v : changes) {
+      for (ExecutionNode* n : v.second) {
+        delete n;
+      }
+    }
+    changes.clear();
+    changesPlaces.clear();
+  };
+
+  // These are all the FILTER nodes where we start:
+  std::vector<ExecutionNode*> nodes = plan->findNodesOfType(EN::FILTER, true);
+
+  bool modified = false;
+  // In the following loop we only collect changes, maybe we introduce some
+  // NoResultsNode, possibly in subqueries.
+  try {
+    for (auto n : nodes) {
+      auto nn = static_cast<FilterNode*>(n);
+      auto invars = nn->getVariablesUsedHere();
+      TRI_ASSERT(invars.size() == 1);
+      FilterToEnumCollFinder finder(plan, invars[0], changesPlaces, changes);
+      nn->walk(&finder);
+      modified |= finder.modified();
+    }
   }
-  opt->addPlan(plan, rule->level, false);
+  catch (...) {
+    cleanupChanges();
+    throw;
+  }
+
+  // First find out how many possibilities for plan changes we actually have:
+  size_t nrPlans = opt->numberOfPlans();
+  size_t possibilities = 1;
+  size_t i = 0;
+  while (i < changes.size()) {
+    possibilities *= changes[i].second.size();
+    i++;
+    if (possibilities + nrPlans > 30) {
+      break;
+    }
+  }
+
+  // We will apply the first possible change for changes[i..changes.size()-1]
+  // and all possible changes for changes[0..i-1] and create all these plans.
+  // First make all the changes from i on in the original plan and those
+  // for which there is only one possibility:
+  try {
+    for (size_t j = 0; j < changes.size(); j++) {
+      std::vector<ExecutionNode*>& v = changes[j].second;
+      if (j >= i || v.size() == 1) {
+        size_t choice = 0;
+        if (v.size() > 1) {
+          // If in doubt, take a skiplist index:
+          for (size_t k = 0; k < v.size(); k++) {
+            auto n = static_cast<IndexRangeNode*>(v[k]);
+            if (n->getIndex()->type == TRI_IDX_TYPE_SKIPLIST_INDEX) {
+              choice = k;
+              break;
+            }
+          }
+        }
+        size_t id = changes[j].first;
+        // Just in case:
+        if (! v.empty()) {
+          plan->registerNode(v[choice]);
+          plan->replaceNode(plan->getNodeById(id), v[choice]);
+          modified = true;
+          // Free the other nodes, if they are there:
+          for (size_t k = 0; k < v.size(); k++) {
+            if (k != choice) {
+              delete v[k];
+            }
+          }
+          v.clear();   // take the new node away from changes such that 
+                       // cleanupChanges does not touch it
+        }
+      }
+    }
+  }
+  catch (...) {
+    cleanupChanges();
+    throw;
+  }
+
+  // Now see whether it is actually only one plan we make:
+  if (possibilities == 1) {
+    try {
+      opt->addPlan(plan, rule->level, modified);
+      cleanupChanges();
+    }
+    catch (...) {
+      cleanupChanges();
+    }
+    return TRI_ERROR_NO_ERROR;
+  }
+
+  // Now we have to create more than one plan, we have to use those from
+  // changes[0..i-1] which have more than one possibility. Note that those
+  // with exactly 1 possibility have already been done above. This amounts
+  // to doing a cartesian product, which we do recursively. The result will
+  // be in the todo variable:
+
+  std::function <void(size_t, size_t, std::vector<size_t>&)> doworkrecursive;
+  std::vector<std::vector<size_t>> todo;
+  std::vector<size_t> work;
+
+
+  doworkrecursive = [&doworkrecursive, &changes, &todo] 
+                    (size_t index, size_t limit, std::vector<size_t>& v) {
+    if (index >= limit) {
+      todo.push_back(v);  // intentionally copy vector
+    }
+    else if (changes[index].second.size() < 2) {
+      doworkrecursive(index+1, limit, v);
+    }
+    else {
+      for (size_t l = 0; l < changes[index].second.size(); l++) {
+        v[index] = l;
+        doworkrecursive(index+1, limit, v);
+      }
+    }
+  };
+ 
+  // if we get here, we can choose between multiple plans... 
+  TRI_ASSERT(possibilities != 1);
+
+  try {
+    work.reserve(i);
+    for (size_t l = 0; l < i; l++) {
+      work.push_back(0);
+    }
+
+    doworkrecursive(0, i, work);
+  }
+  catch (...) {
+    cleanupChanges();
+    throw;
+  }
+
+  // Now we only have to go through todo and do what needs doing:
+  try {
+    for (auto const& v : todo) {
+      std::unique_ptr<ExecutionPlan> newPlan(plan->clone());
+      for (size_t l = 0; l < i; l++) {
+        if (changes[l].second.size() >= 2) {
+          ExecutionNode* newNode 
+              = changes[l].second[v[l]]->clone(newPlan.get(), true, false);
+          newPlan->registerNode(newNode);
+          newPlan->replaceNode(newPlan->getNodeById(changes[l].first), newNode);
+        }
+      }
+      opt->addPlan(newPlan.release(), rule->level, true);
+    }
+  }
+  catch (...) {
+    cleanupChanges();
+    throw;
+  }
+
+  cleanupChanges();
+  // finally delete the original plan. all plans created in this rule will be better(tm)
+  delete plan;
 
   return TRI_ERROR_NO_ERROR;
 }
@@ -1362,25 +1573,26 @@ public:
 class SortToIndexNode : public WalkerWorker<ExecutionNode> {
   using ECN = triagens::aql::EnumerateCollectionNode;
 
-  Optimizer*           _opt;
   ExecutionPlan*       _plan;
   SortAnalysis*        _sortNode;
   Optimizer::RuleLevel _level;
+  bool                 _modified;
+
 
   public:
-  bool                 planModified;
 
+    SortToIndexNode (ExecutionPlan* plan,
+                     SortAnalysis* Node,
+                     Optimizer::RuleLevel level)
+      : _plan(plan),
+        _sortNode(Node),
+        _level(level),
+        _modified(false) {
+    }
 
-  SortToIndexNode (Optimizer* opt,
-                   ExecutionPlan* plan,
-                   SortAnalysis* Node,
-                   Optimizer::RuleLevel level)
-    : _opt(opt),
-      _plan(plan),
-      _sortNode(Node),
-      _level(level) {
-    planModified = false;
-  }
+    bool modified () const {
+      return _modified;
+    }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief check if an enumerate collection or index range node is part of an
@@ -1393,170 +1605,165 @@ class SortToIndexNode : public WalkerWorker<ExecutionNode> {
 /// loop but not for the total result
 ////////////////////////////////////////////////////////////////////////////////
 
-  bool isInnerLoop (ExecutionNode const* node) const {
-    while (node != nullptr) {
-      auto deps = node->getDependencies();
-      if (deps.size() != 1) {
-        return false;
-      }
-      node = deps[0];
-      TRI_ASSERT(node != nullptr);
+    bool isInnerLoop (ExecutionNode const* node) const {
+      while (node != nullptr) {
+        auto deps = node->getDependencies();
+        if (deps.size() != 1) {
+          return false;
+        }
+        node = deps[0];
+        TRI_ASSERT(node != nullptr);
 
-      if (node->getType() == EN::ENUMERATE_COLLECTION ||
-          node->getType() == EN::INDEX_RANGE ||
-          node->getType() == EN::ENUMERATE_LIST) {
-        // we are contained in an outer loop
-        return true;
+        if (node->getType() == EN::ENUMERATE_COLLECTION ||
+            node->getType() == EN::INDEX_RANGE ||
+            node->getType() == EN::ENUMERATE_LIST) {
+          // we are contained in an outer loop
+          return true;
 
-        // future potential optimization: check if the outer loop has 0 or 1 
-        // iterations. in this case it is still possible to remove the sort
+          // future potential optimization: check if the outer loop has 0 or 1 
+          // iterations. in this case it is still possible to remove the sort
+        }
       }
+
+      return false;
     }
-
-    return false;
-  }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief if the sort is already done by an indexrange, remove the sort.
 ////////////////////////////////////////////////////////////////////////////////
 
-  bool handleIndexRangeNode (IndexRangeNode* node) {
-    if (isInnerLoop(node)) {
-      // index range contained in an outer loop. must not optimize away the sort!
+    bool handleIndexRangeNode (IndexRangeNode* node) {
+      if (isInnerLoop(node)) {
+        // index range contained in an outer loop. must not optimize away the sort!
+        return true;
+      }
+
+      auto variableName = node->getVariablesSetHere()[0]->name;
+      auto result = _sortNode->getAttrsForVariableName(variableName);
+
+      auto const& match = node->MatchesIndex(result.first);
+      if (match.doesMatch) {
+        if (match.reverse) {
+          node->reverse(true); 
+        } 
+        _sortNode->removeSortNodeFromPlan(_plan);
+        _modified = true;
+      }
       return true;
     }
-
-    auto variableName = node->getVariablesSetHere()[0]->name;
-    auto result = _sortNode->getAttrsForVariableName(variableName);
-
-    auto const& match = node->MatchesIndex(result.first);
-    if (match.doesMatch) {
-      if (match.reverse) {
-        node->reverse(true); 
-      } 
-      _sortNode->removeSortNodeFromPlan(_plan);
-      planModified = true;
-    }
-    return true;
-  }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief check whether we can sort via an index.
 ////////////////////////////////////////////////////////////////////////////////
 
-  bool handleEnumerateCollectionNode (EnumerateCollectionNode* node, 
-                                      Optimizer::RuleLevel level) {
-    if (isInnerLoop(node)) {
-      // index range contained in an outer loop. must not optimize away the sort!
+    bool handleEnumerateCollectionNode (EnumerateCollectionNode* node, 
+                                        Optimizer::RuleLevel level) {
+      if (isInnerLoop(node)) {
+        // index range contained in an outer loop. must not optimize away the sort!
+        return true;
+      }
+
+      auto variableName = node->getVariablesSetHere()[0]->name;
+      auto result = _sortNode->getAttrsForVariableName(variableName);
+
+      if (result.first.size() == 0) {
+        return true; // we didn't find anything replaceable by indice
+      }
+
+      for (auto idx : node->getIndicesOrdered(result.first)) {
+        // make one new plan for each index that replaces this
+        // EnumerateCollectionNode with an IndexRangeNode
+
+        // can only use the index if it is a skip list or (a hash and we
+        // are checking equality)
+
+        ExecutionNode* newNode = new IndexRangeNode(_plan,
+                                                    _plan->nextId(),
+                                                    node->vocbase(), 
+                                                    node->collection(),
+                                                    node->outVariable(),
+                                                    idx.index,
+                                                    result.second,
+                                                    (idx.doesMatch && idx.reverse));
+        _plan->registerNode(newNode);
+        _plan->replaceNode(node, newNode);
+
+        if (idx.doesMatch) { // if the index superseedes the sort, remove it.
+          _sortNode->removeSortNodeFromPlan(_plan);
+        }
+        
+        _modified = true;
+      }
+      
       return true;
     }
 
-    auto variableName = node->getVariablesSetHere()[0]->name;
-    auto result = _sortNode->getAttrsForVariableName(variableName);
-
-    if (result.first.size() == 0) {
-      return true; // we didn't find anything replaceable by indice
+    bool enterSubquery (ExecutionNode*, ExecutionNode*) override final { 
+      return false; 
     }
 
-    for (auto idx: node->getIndicesOrdered(result.first)) {
-      // make one new plan for each index that replaces this
-      // EnumerateCollectionNode with an IndexRangeNode
+    bool before (ExecutionNode* en) override final {
+      switch (en->getType()) {
+      case EN::ENUMERATE_LIST:
+      case EN::CALCULATION:
+      case EN::SUBQUERY:
+      case EN::FILTER:
+        return false;                           // skip. we don't care.
 
-      // can only use the index if it is a skip list or (a hash and we
-      // are checking equality)
-      auto newPlan = _plan->clone();
-      try {
-        ExecutionNode* newNode = new IndexRangeNode(newPlan,
-                                      newPlan->nextId(),
-                                      node->vocbase(), 
-                                      node->collection(),
-                                      node->outVariable(),
-                                      idx.index,
-                                      result.second,
-                                      (idx.doesMatch && idx.reverse));
-        newPlan->registerNode(newNode);
-        newPlan->replaceNode(newPlan->getNodeById(node->id()), newNode);
+      case EN::SINGLETON:
+      case EN::AGGREGATE:
+      case EN::INSERT:
+      case EN::REMOVE:
+      case EN::REPLACE:
+      case EN::UPDATE:
+      case EN::RETURN:
+      case EN::NORESULTS:
+      case EN::SCATTER:
+      case EN::DISTRIBUTE:
+      case EN::GATHER:
+      case EN::REMOTE:
+      case EN::ILLEGAL:
+      case EN::LIMIT:                      // LIMIT is criterion to stop
+        return true;  // abort.
 
-        if (idx.doesMatch) { // if the index superseedes the sort, remove it.
-          _sortNode->removeSortNodeFromPlan(newPlan);
-          _opt->addPlan(newPlan, Optimizer::RuleLevel::pass5, true);
-        }
-        else {
-          _opt->addPlan(newPlan, level, true);
-        }
+      case EN::SORT:     // pulling two sorts together is done elsewhere.
+        return en->id() != _sortNode->sortNodeID;    // ignore ourselves.
+
+      case EN::INDEX_RANGE:
+        return handleIndexRangeNode(static_cast<IndexRangeNode*>(en));
+
+      case EN::ENUMERATE_COLLECTION:
+        return handleEnumerateCollectionNode(static_cast<EnumerateCollectionNode*>(en), _level);
       }
-      catch (...) {
-        delete newPlan;
-        throw;
-      }
-
+      return true;
     }
-    
-    return true;
-  }
-
-  bool enterSubquery (ExecutionNode*, ExecutionNode*) override final { 
-    return false; 
-  }
-
-  bool before (ExecutionNode* en) override final {
-    switch (en->getType()) {
-    case EN::ENUMERATE_LIST:
-    case EN::CALCULATION:
-    case EN::SUBQUERY:
-    case EN::FILTER:
-      return false;                           // skip. we don't care.
-
-    case EN::SINGLETON:
-    case EN::AGGREGATE:
-    case EN::INSERT:
-    case EN::REMOVE:
-    case EN::REPLACE:
-    case EN::UPDATE:
-    case EN::RETURN:
-    case EN::NORESULTS:
-    case EN::SCATTER:
-    case EN::DISTRIBUTE:
-    case EN::GATHER:
-    case EN::REMOTE:
-    case EN::ILLEGAL:
-    case EN::LIMIT:                      // LIMIT is criterion to stop
-      return true;  // abort.
-
-    case EN::SORT:     // pulling two sorts together is done elsewhere.
-      return en->id() != _sortNode->sortNodeID;    // ignore ourselves.
-
-    case EN::INDEX_RANGE:
-      return handleIndexRangeNode(static_cast<IndexRangeNode*>(en));
-
-    case EN::ENUMERATE_COLLECTION:
-      return handleEnumerateCollectionNode(static_cast<EnumerateCollectionNode*>(en), _level);
-    }
-    return true;
-  }
 };
 
-int triagens::aql::useIndexForSort (Optimizer* opt, 
-                                    ExecutionPlan* plan,
-                                    Optimizer::Rule const* rule) {
-  bool planModified = false;
+int triagens::aql::useIndexForSortRule (Optimizer* opt, 
+                                        ExecutionPlan* plan,
+                                        Optimizer::Rule const* rule) {
+  bool modified = false;
   std::vector<ExecutionNode*> nodes
     = plan->findNodesOfType(EN::SORT, true);
   for (auto n : nodes) {
     auto thisSortNode = static_cast<SortNode*>(n);
     SortAnalysis node(thisSortNode);
     if (node.isAnalyzeable() && ! n->getDependencies().empty()) {
-      SortToIndexNode finder(opt, plan, &node, rule->level);
+      SortToIndexNode finder(plan, &node, rule->level);
       thisSortNode->getDependencies()[0]->walk(&finder);
-      if (finder.planModified) {
-        planModified = true;
+      if (finder.modified()) {
+        modified = true;
       }
     }
   }
-
+    
+  if (modified) {
+    plan->findVarUsage();
+  }
+        
   opt->addPlan(plan,
-               planModified ? Optimizer::RuleLevel::pass5 : rule->level,
-               planModified);
+               modified ? Optimizer::RuleLevel::pass5 : rule->level,
+               modified);
 
   return TRI_ERROR_NO_ERROR;
 }
@@ -1733,9 +1940,9 @@ struct FilterCondition {
 /// @brief try to remove filters which are covered by indexes
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::removeFiltersCoveredByIndex (Optimizer* opt,
-                                                ExecutionPlan* plan,
-                                                Optimizer::Rule const* rule) {
+int triagens::aql::removeFiltersCoveredByIndexRule (Optimizer* opt,
+                                                    ExecutionPlan* plan,
+                                                    Optimizer::Rule const* rule) {
   std::unordered_set<ExecutionNode*> toUnlink;
   std::vector<ExecutionNode*>&& nodes= plan->findNodesOfType(EN::FILTER, true); 
   
@@ -1845,9 +2052,9 @@ static bool nextPermutationTuple (std::vector<size_t>& data,
 /// @brief interchange adjacent EnumerateCollectionNodes in all possible ways
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::interchangeAdjacentEnumerations (Optimizer* opt,
-                                                    ExecutionPlan* plan,
-                                                    Optimizer::Rule const* rule) {
+int triagens::aql::interchangeAdjacentEnumerationsRule (Optimizer* opt,
+                                                        ExecutionPlan* plan,
+                                                        Optimizer::Rule const* rule) {
   std::vector<ExecutionNode*>&& nodes
    = plan->findNodesOfType(EN::ENUMERATE_COLLECTION, 
                             true);
@@ -1901,9 +2108,11 @@ int triagens::aql::interchangeAdjacentEnumerations (Optimizer* opt,
   // independently. This is why we need to compute all permutation tuples.
 
   opt->addPlan(plan, rule->level, false);
-  
+
   if (! starts.empty()) {
     nextPermutationTuple(permTuple, starts);  // will never return false
+    bool ok = true;
+
     do {
       // Clone the plan:
       auto newPlan = plan->clone();
@@ -1943,6 +2152,8 @@ int triagens::aql::interchangeAdjacentEnumerations (Optimizer* opt,
 
         // OK, the new plan is ready, let's report it:
         if (! opt->addPlan(newPlan, rule->level, true)) {
+          // have enough plans. stop permutations
+          ok = false;
           break;
         }
       }
@@ -1952,7 +2163,7 @@ int triagens::aql::interchangeAdjacentEnumerations (Optimizer* opt,
       }
 
     } 
-    while (nextPermutationTuple(permTuple, starts));
+    while (ok && nextPermutationTuple(permTuple, starts));
   }
 
   return TRI_ERROR_NO_ERROR;
@@ -1965,9 +2176,9 @@ int triagens::aql::interchangeAdjacentEnumerations (Optimizer* opt,
 /// it will change plans in place
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::scatterInCluster (Optimizer* opt,
-                                     ExecutionPlan* plan,
-                                     Optimizer::Rule const* rule) {
+int triagens::aql::scatterInClusterRule (Optimizer* opt,
+                                         ExecutionPlan* plan,
+                                         Optimizer::Rule const* rule) {
   bool wasModified = false;
 
   if (ExecutionEngine::isCoordinator()) {
@@ -2077,9 +2288,9 @@ int triagens::aql::scatterInCluster (Optimizer* opt,
 /// it will change plans in place
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::distributeInCluster (Optimizer* opt,
-                                        ExecutionPlan* plan,
-                                        Optimizer::Rule const* rule) {
+int triagens::aql::distributeInClusterRule (Optimizer* opt,
+                                            ExecutionPlan* plan,
+                                            Optimizer::Rule const* rule) {
   bool wasModified = false;
 
   if (ExecutionEngine::isCoordinator()) {
@@ -2158,9 +2369,9 @@ int triagens::aql::distributeInCluster (Optimizer* opt,
 /// as small as possible as early as possible
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::distributeFilternCalcToCluster (Optimizer* opt, 
-                                                   ExecutionPlan* plan,
-                                                   Optimizer::Rule const* rule) {
+int triagens::aql::distributeFilternCalcToClusterRule (Optimizer* opt, 
+                                                       ExecutionPlan* plan,
+                                                       Optimizer::Rule const* rule) {
   bool modified = false;
 
   std::vector<ExecutionNode*> nodes
@@ -2251,9 +2462,9 @@ int triagens::aql::distributeFilternCalcToCluster (Optimizer* opt,
 /// filters are not pushed beyond limits
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::distributeSortToCluster (Optimizer* opt, 
-                                            ExecutionPlan* plan,
-                                            Optimizer::Rule const* rule) {
+int triagens::aql::distributeSortToClusterRule (Optimizer* opt, 
+                                                ExecutionPlan* plan,
+                                                Optimizer::Rule const* rule) {
   bool modified = false;
 
   std::vector<ExecutionNode*> nodes
@@ -2335,9 +2546,9 @@ int triagens::aql::distributeSortToCluster (Optimizer* opt,
 /// only a SingletonNode and possibly some CalculationNodes as dependencies
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::removeUnnecessaryRemoteScatter (Optimizer* opt, 
-                                                   ExecutionPlan* plan, 
-                                                   Optimizer::Rule const* rule) {
+int triagens::aql::removeUnnecessaryRemoteScatterRule (Optimizer* opt, 
+                                                       ExecutionPlan* plan, 
+                                                       Optimizer::Rule const* rule) {
   std::vector<ExecutionNode*> nodes
     = plan->findNodesOfType(EN::REMOTE, true);
   std::unordered_set<ExecutionNode*> toUnlink;
@@ -2579,9 +2790,9 @@ class RemoveToEnumCollFinder: public WalkerWorker<ExecutionNode> {
 /// @brief recognises that a RemoveNode can be moved to the shards.
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::undistributeRemoveAfterEnumColl (Optimizer* opt, 
-                                                    ExecutionPlan* plan, 
-                                                    Optimizer::Rule const* rule) {
+int triagens::aql::undistributeRemoveAfterEnumCollRule (Optimizer* opt, 
+                                                        ExecutionPlan* plan, 
+                                                        Optimizer::Rule const* rule) {
   std::vector<ExecutionNode*> nodes
     = plan->findNodesOfType(EN::REMOVE, true);
   std::unordered_set<ExecutionNode*> toUnlink;
@@ -2782,9 +2993,9 @@ struct OrToInConverter {
 //  same (single) attribute.
 ////////////////////////////////////////////////////////////////////////////////
 
-int triagens::aql::replaceOrWithIn (Optimizer* opt, 
-                                    ExecutionPlan* plan, 
-                                    Optimizer::Rule const* rule) {
+int triagens::aql::replaceOrWithInRule (Optimizer* opt, 
+                                        ExecutionPlan* plan, 
+                                        Optimizer::Rule const* rule) {
   ENTER_BLOCK;
   std::vector<ExecutionNode*> nodes
     = plan->findNodesOfType(EN::FILTER, true);
@@ -2981,9 +3192,9 @@ struct RemoveRedundantOr {
   }
 };
 
-int triagens::aql::removeRedundantOr (Optimizer* opt, 
-                                      ExecutionPlan* plan, 
-                                      Optimizer::Rule const* rule) {
+int triagens::aql::removeRedundantOrRule (Optimizer* opt, 
+                                          ExecutionPlan* plan, 
+                                          Optimizer::Rule const* rule) {
   ENTER_BLOCK;
   std::vector<ExecutionNode*> nodes
     = plan->findNodesOfType(EN::FILTER, true);
