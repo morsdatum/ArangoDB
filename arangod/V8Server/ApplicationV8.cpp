@@ -81,13 +81,6 @@ std::string const GlobalContextMethods::CodeReloadRouting
   = "require(\"org/arangodb/actions\").reloadRouting()";
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief flush the modules cache
-////////////////////////////////////////////////////////////////////////////////
-
-std::string const GlobalContextMethods::CodeFlushModuleCache
-  = "require(\"internal\").flushModuleCache()";
-
-////////////////////////////////////////////////////////////////////////////////
 /// @brief reload AQL functions
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -215,9 +208,8 @@ void ApplicationV8::V8Context::handleGlobalContextMethods () {
     _globalMethods.clear();
   }
 
-  for (vector<GlobalContextMethods::MethodType>::const_iterator i = copy.begin();  i != copy.end();  ++i) {
-    GlobalContextMethods::MethodType const type = *i;
-    string const func = GlobalContextMethods::getCode(type);
+  for (auto type : copy) {
+    string const& func = GlobalContextMethods::getCode(type);
 
     LOG_DEBUG("executing global context methods '%s' for context %d", func.c_str(), (int) _id);
 
@@ -537,7 +529,7 @@ void ApplicationV8::exitContext (V8Context* context) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief adds a global context functions for STANDARD to be executed asap
+/// @brief adds a global context function for STANDARD to be executed asap
 ////////////////////////////////////////////////////////////////////////////////
 
 bool ApplicationV8::addGlobalContextMethod (string const& method) {
