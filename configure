@@ -7458,12 +7458,21 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 #ifdef __cplusplus
 extern "C"
 #endif
-char sincos ();
+/*char sincos ();*/
+#include <math.h>
+#include <stdlib.h>
+#if !defined(__clang__)
+  void sincos(double, double *,double*);
+#endif
 int
 main ()
 {
-return sincos ();
-  ;
+  double i = 0.5f;
+#if defined(__clang__)
+  sin(i);
+#else
+  sincos(i,NULL,NULL);
+#endif
   return 0;
 }
 _ACEOF
@@ -8186,7 +8195,7 @@ if ${ac_cv_lib_ssl_SSL_get_error+:} false; then :
   $as_echo_n "(cached) " >&6
 else
   ac_check_lib_save_LIBS=$LIBS
-LIBS="-lssl -lcrypto -lz -ldl $LIBS $LIBS"
+LIBS="-lssl -lcrypto -lz $LIBS $LIBS"
 cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
@@ -8217,7 +8226,7 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_ssl_SSL_get_error" >&5
 $as_echo "$ac_cv_lib_ssl_SSL_get_error" >&6; }
 if test "x$ac_cv_lib_ssl_SSL_get_error" = xyes; then :
-  OPENSSL_LIBS="-lssl -ldl $OPENSSL_LIBS"
+  OPENSSL_LIBS="-lssl $OPENSSL_LIBS"
 else
   as_fn_error $? "Please install the OpenSSL library" "$LINENO" 5
 fi
@@ -8228,7 +8237,7 @@ fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking return type of SSLv23_method" >&5
 $as_echo_n "checking return type of SSLv23_method... " >&6; }
-LIBS="-lcrypto -lssl -lz -ldl $LIBS"
+LIBS="-lcrypto -lssl -lz  $LIBS"
 cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 #include <openssl/ssl.h>
@@ -8493,7 +8502,7 @@ else
   icu_lib_dir="${srcdir}/3rdParty/${V8_DIR}/out/$V8_TARGET/obj.target/third_party/icu"
 fi
 
-ICU_LIBS="-ldl -lm ${icu_lib_dir}/libicui18n.a ${icu_lib_dir}/libicuuc.a ${icu_lib_dir}/libicudata.a -ldl -lm"
+ICU_LIBS=" -lm ${icu_lib_dir}/libicui18n.a ${icu_lib_dir}/libicuuc.a ${icu_lib_dir}/libicudata.a -lm"
 
 
 
