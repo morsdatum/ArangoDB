@@ -123,7 +123,7 @@ TEST(HandleNull) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope outer_scope(isolate);
   LocalContext context;
-  Handle<Object> n(reinterpret_cast<Object*>(NULL), isolate);
+  Handle<Object> n(reinterpret_cast<Object*>(0), isolate);
   CHECK(!n.is_null());
 }
 
