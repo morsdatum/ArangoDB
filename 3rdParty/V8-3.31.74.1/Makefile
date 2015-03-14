@@ -52,6 +52,10 @@ endif
 ifdef console
   GYPFLAGS += -Dconsole=$(console)
 endif
+#clang=on
+ifeq ($(clang), on)
+  GYPFLAGS += -Dclang=1
+endif
 # disassembler=on
 ifeq ($(disassembler), on)
   GYPFLAGS += -Dv8_enable_disassembler=1
