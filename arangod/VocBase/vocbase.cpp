@@ -35,6 +35,7 @@
 
 #include <regex.h>
 
+#include "Aql/QueryList.h"
 #include "Basics/conversions.h"
 #include "Basics/files.h"
 #include "Basics/hashes.h"
@@ -73,6 +74,8 @@
 // -----------------------------------------------------------------------------
 // --SECTION--                                                     private types
 // -----------------------------------------------------------------------------
+
+static std::atomic<TRI_voc_tick_t> QueryId(1);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief auxiliary struct for index iteration
@@ -928,7 +931,27 @@ static int ScanPath (TRI_vocbase_t* vocbase,
       }
 
       if (res != TRI_ERROR_NO_ERROR) {
-        LOG_DEBUG("ignoring directory '%s' without valid parameter file '%s'", file, TRI_VOC_PARAMETER_FILE);
+        char* tmpfile = TRI_Concatenate2File(file, ".tmp");
+
+        if (TRI_ExistsFile(tmpfile)) {
+          LOG_TRACE("ignoring temporary directory '%s'", tmpfile);
+          TRI_Free(TRI_CORE_MEM_ZONE, tmpfile);
+          // temp file still exists. this means the collection was not created fully
+          // and needs to be ignored
+          TRI_FreeString(TRI_CORE_MEM_ZONE, file);
+          TRI_FreeCollectionInfoOptions(&info);
+
+          continue; // ignore this directory
+        }
+        
+        TRI_Free(TRI_CORE_MEM_ZONE, tmpfile);
+
+        LOG_ERROR("cannot read collection info file in directory '%s': %s", file, TRI_errno_string(res));
+        TRI_FreeString(TRI_CORE_MEM_ZONE, file);
+        TRI_DestroyVectorString(&files);
+        TRI_FreeCollectionInfoOptions(&info);
+        regfree(&re);
+        return TRI_set_errno(res);
       }
       else if (info._deleted) {
         // we found a collection that is marked as deleted.
@@ -1146,7 +1169,7 @@ static int LoadCollectionVocBase (TRI_vocbase_t* vocbase,
     // disk activity, index creation etc.)
     TRI_WRITE_UNLOCK_STATUS_VOCBASE_COL(collection);
 
-    document = TRI_OpenDocumentCollection(vocbase, collection);
+    document = TRI_OpenDocumentCollection(vocbase, collection, IGNORE_DATAFILE_ERRORS);
 
     // lock again the adjust the status
     TRI_WRITE_LOCK_STATUS_VOCBASE_COL(collection);
@@ -1350,6 +1373,18 @@ TRI_vocbase_t* TRI_CreateInitialVocBase (TRI_server_t* server,
 
   vocbase->_oldTransactions    = nullptr;
 
+  try {
+    vocbase->_queries          = new triagens::aql::QueryList(vocbase);
+  }
+  catch (...) {
+    TRI_Free(TRI_CORE_MEM_ZONE, vocbase->_name);
+    TRI_Free(TRI_CORE_MEM_ZONE, vocbase->_path);
+    TRI_Free(TRI_UNKNOWN_MEM_ZONE, vocbase);
+    TRI_set_errno(TRI_ERROR_OUT_OF_MEMORY);
+    
+    return nullptr;
+  }
+
   // use the defaults provided
   TRI_ApplyVocBaseDefaults(vocbase, defaults);
 
@@ -1436,6 +1471,10 @@ void TRI_DestroyInitialVocBase (TRI_vocbase_t* vocbase) {
   TRI_DestroySpin(&vocbase->_usage._lock);
 
   TRI_FreeStoreGeneralCursor(vocbase->_cursors);
+  
+  if (vocbase->_queries != nullptr) {
+    delete static_cast<triagens::aql::QueryList*>(vocbase->_queries);
+  }
 
   // free name and path
   TRI_Free(TRI_CORE_MEM_ZONE, vocbase->_path);
@@ -2326,7 +2365,12 @@ TRI_vocbase_col_t* TRI_UseCollectionByNameVocBase (TRI_vocbase_t* vocbase,
 
   int res = LoadCollectionVocBase(vocbase, const_cast<TRI_vocbase_col_t*>(collection), status);
 
-  return res == TRI_ERROR_NO_ERROR ? const_cast<TRI_vocbase_col_t*>(collection) : nullptr;
+  if (res == TRI_ERROR_NO_ERROR) {
+    return const_cast<TRI_vocbase_col_t*>(collection);
+  }
+
+  TRI_set_errno(res);  
+  return nullptr;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2477,6 +2521,14 @@ bool TRI_IsAllowedNameVocBase (bool allowSystem,
   }
 
   return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief returns the next query id
+////////////////////////////////////////////////////////////////////////////////
+
+TRI_voc_tick_t TRI_NextQueryIdVocBase (TRI_vocbase_t* vocbase) {
+  return QueryId.fetch_add(1, std::memory_order_seq_cst);
 }
 
 // -----------------------------------------------------------------------------

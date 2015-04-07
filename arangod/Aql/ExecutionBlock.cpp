@@ -219,6 +219,24 @@ int ExecutionBlock::initializeCursor (AqlItemBlock* items, size_t pos) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// @brief whether or not the query was killed
+////////////////////////////////////////////////////////////////////////////////
+
+bool ExecutionBlock::isKilled () const {
+  return _engine->getQuery()->killed();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief whether or not the query was killed
+////////////////////////////////////////////////////////////////////////////////
+
+void ExecutionBlock::throwIfKilled () {
+  if (isKilled()) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_QUERY_KILLED);
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// @brief functionality to walk an execution block recursively
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -380,6 +398,8 @@ void ExecutionBlock::inheritRegisters (AqlItemBlock const* src,
 ////////////////////////////////////////////////////////////////////////////////
 
 bool ExecutionBlock::getBlock (size_t atLeast, size_t atMost) {
+  throwIfKilled(); // check if we were aborted
+
   AqlItemBlock* docs = _dependencies[0]->getSome(atLeast, atMost);
   if (docs == nullptr) {
     return false;
@@ -674,13 +694,18 @@ EnumerateCollectionBlock::EnumerateCollectionBlock (ExecutionEngine* engine,
     _atBeginning(false),
     _random(ep->_random) {
 
+  auto trxCollection = _trx->trxCollection(_collection->cid());
+  if (trxCollection != nullptr) {
+    _trx->orderBarrier(trxCollection);
+  }
+
   if (_random) {
     // random scan
-    _scanner = new RandomCollectionScanner(_trx, _trx->trxCollection(_collection->cid()));
+    _scanner = new RandomCollectionScanner(_trx, trxCollection);
   }
   else {
     // default: linear scan
-    _scanner = new LinearCollectionScanner(_trx, _trx->trxCollection(_collection->cid()));
+    _scanner = new LinearCollectionScanner(_trx, trxCollection);
   }
 }
 
@@ -892,7 +917,12 @@ IndexRangeBlock::IndexRangeBlock (ExecutionEngine* engine,
     _posInRanges(0),
     _sortCoords(),
     _freeCondition(true) {
-  
+
+  auto trxCollection = _trx->trxCollection(_collection->cid());
+  if (trxCollection != nullptr) {
+    _trx->orderBarrier(trxCollection);
+  }
+     
   for (size_t i = 0; i < en->_ranges.size(); i++) {
     _condition->emplace_back(IndexAndCondition());
     for (auto ri: en->_ranges[i]) {
@@ -2464,6 +2494,7 @@ void CalculationBlock::executeExpression (AqlItemBlock* result) {
       a.destroy();
       throw;
     }
+    throwIfKilled(); // check if we were aborted
   }
 }
 
@@ -2478,6 +2509,7 @@ void CalculationBlock::doEvaluation (AqlItemBlock* result) {
     // the calculation is a reference to a variable only.
     // no need to execute the expression at all
     fillBlockWithReference(result);
+    throwIfKilled(); // check if we were aborted
     return;
   }
 
@@ -2890,7 +2922,7 @@ AggregateBlock::AggregateBlock (ExecutionEngine* engine,
     // we need this mapping to generate the grouped output
 
     for (size_t i = 0; i < registerPlan.size(); ++i) {
-      _variableNames.push_back(""); // initialize with some default value
+      _variableNames.emplace_back(""); // initialize with some default value
     }
 
     // iterate over all our variables
@@ -3123,7 +3155,17 @@ void AggregateBlock::emitGroup (AqlItemBlock const* cur,
   size_t i = 0;
   for (auto it = _aggregateRegisters.begin(); it != _aggregateRegisters.end(); ++it) {
     // FIXME: can throw:
-    res->setValue(row, (*it).first, _currentGroup.groupValues[i]);
+
+    if (_currentGroup.groupValues[i].type() == AqlValue::SHAPED) {
+      // if a value in the group is a document, it must be converted into its JSON equivalent. the reason is
+      // that a group might theoretically consist of multiple documents, from different collections. but there
+      // is only one collection pointer per output register
+      auto document = cur->getDocumentCollection((*it).second);
+      res->setValue(row, (*it).first, AqlValue(new Json(_currentGroup.groupValues[i].toJson(_trx, document))));
+    }
+    else {
+      res->setValue(row, (*it).first, _currentGroup.groupValues[i]);
+    }
     ++i;
   }
 
@@ -3543,6 +3585,11 @@ ModificationBlock::ModificationBlock (ExecutionEngine* engine,
   : ExecutionBlock(engine, ep),
     _outReg(ExecutionNode::MaxRegisterId),
     _collection(ep->_collection) {
+  
+  auto trxCollection = _trx->trxCollection(_collection->cid());
+  if (trxCollection != nullptr) {
+    _trx->orderBarrier(trxCollection);
+  }
 
   if (ep->_outVariable != nullptr) {
     /*
@@ -3724,6 +3771,8 @@ AqlItemBlock* RemoveBlock::work (std::vector<AqlItemBlock*>& blocks) {
   for (auto it = blocks.begin(); it != blocks.end(); ++it) {
     auto res = (*it);
     auto document = res->getDocumentCollection(registerId);
+    
+    throwIfKilled(); // check if we were aborted
       
     size_t const n = res->size();
     
@@ -3853,6 +3902,8 @@ AqlItemBlock* InsertBlock::work (std::vector<AqlItemBlock*>& blocks) {
     auto res = (*it);
     auto document = res->getDocumentCollection(registerId);
     size_t const n = res->size();
+    
+    throwIfKilled(); // check if we were aborted
     
     // loop over the complete block
     for (size_t i = 0; i < n; ++i) {
@@ -3987,6 +4038,8 @@ AqlItemBlock* UpdateBlock::work (std::vector<AqlItemBlock*>& blocks) {
     auto* res = b;   // This is intentionally a copy!
     auto document = res->getDocumentCollection(docRegisterId);
     decltype(document) keyDocument = nullptr;
+
+    throwIfKilled(); // check if we were aborted
 
     if (hasKeyVariable) {
       keyDocument = res->getDocumentCollection(keyRegisterId);
@@ -4161,6 +4214,8 @@ AqlItemBlock* ReplaceBlock::work (std::vector<AqlItemBlock*>& blocks) {
     if (hasKeyVariable) {
       keyDocument = res->getDocumentCollection(keyRegisterId);
     }
+    
+    throwIfKilled(); // check if we were aborted
       
     size_t const n = res->size();
     

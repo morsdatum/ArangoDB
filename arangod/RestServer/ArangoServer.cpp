@@ -36,6 +36,7 @@
 #include "Admin/ApplicationAdminServer.h"
 #include "Admin/RestHandlerCreator.h"
 #include "Admin/RestShutdownHandler.h"
+#include "Aql/Query.h"
 #include "Basics/FileUtils.h"
 #include "Basics/Nonce.h"
 #include "Basics/ProgramOptions.h"
@@ -85,6 +86,8 @@ using namespace triagens::admin;
 using namespace triagens::arango;
 
 bool ALLOW_USE_DATABASE_IN_REST_ACTIONS;
+
+bool IGNORE_DATAFILE_ERRORS;
 
 // -----------------------------------------------------------------------------
 // --SECTION--                                                 private functions
@@ -286,17 +289,14 @@ ArangoServer::ArangoServer (int argc, char** argv)
     _defaultMaximalSize(TRI_JOURNAL_DEFAULT_MAXIMAL_SIZE),
     _defaultWaitForSync(false),
     _forceSyncProperties(true),
+    _ignoreDatafileErrors(true),
     _disableReplicationApplier(false),
+    _disableQueryTracking(false),
     _server(nullptr),
     _queryRegistry(nullptr),
     _pairForAql(nullptr) {
 
   TRI_SetApplicationName("arangod");
-
-  char* p = TRI_GetTempPath();
-  // copy the string
-  _tempPath = string(p);
-  TRI_FreeString(TRI_CORE_MEM_ZONE, p);
 
   // set working directory and database directory
 #ifdef _WIN32
@@ -464,7 +464,8 @@ void ArangoServer::buildApplicationServer () {
   string languageName;
 
   if (!Utf8Helper::DefaultUtf8Helper.setCollatorLanguage(_defaultLanguage)) {
-    LOG_FATAL_AND_EXIT("failed to initialise ICU");
+    const char *ICU_env = getenv("ICU_DATA");
+    LOG_FATAL_AND_EXIT("failed to initialise ICU; ICU_DATA='%s'", (ICU_env) ? ICU_env : "");
   }
 
   if (Utf8Helper::DefaultUtf8Helper.getCollatorCountry() != "") {
@@ -531,6 +532,8 @@ void ArangoServer::buildApplicationServer () {
     ("database.maximal-journal-size", &_defaultMaximalSize, "default maximal journal size, can be overwritten when creating a collection")
     ("database.wait-for-sync", &_defaultWaitForSync, "default wait-for-sync behavior, can be overwritten when creating a collection")
     ("database.force-sync-properties", &_forceSyncProperties, "force syncing of collection properties to disk, will use waitForSync value of collection when turned off")
+    ("database.ignore-datafile-errors", &_ignoreDatafileErrors, "load collections even if datafiles may contain errors")
+    ("database.disable-query-tracking", &_disableQueryTracking, "turn off AQL query tracking by default")
   ;
 
   // .............................................................................
@@ -615,6 +618,12 @@ void ArangoServer::buildApplicationServer () {
     TRI_SetUserTempPath((char*) _tempPath.c_str());
   }
 
+  // must be used after drop privileges and be called to set it to avoid raise conditions
+  char* pp = TRI_GetTempPath();
+  TRI_FreeString(TRI_CORE_MEM_ZONE, pp);
+
+  IGNORE_DATAFILE_ERRORS = _ignoreDatafileErrors;
+
   // .............................................................................
   // init nonces
   // .............................................................................
@@ -671,6 +680,10 @@ void ArangoServer::buildApplicationServer () {
     // testing disables authentication
     _disableAuthentication = true;
   }
+  
+  // set global query tracking flag
+  triagens::aql::Query::DisableQueryTracking(_disableQueryTracking);
+
 
   // .............................................................................
   // now run arangod
@@ -774,6 +787,8 @@ int ArangoServer::startupServer () {
     _dispatcherThreads = 1;
   }
 
+  startupProgress();
+
   // open all databases
   bool const iterateMarkersOnOpen = ! wal::LogfileManager::instance()->hasFoundLastTick();
 
@@ -785,6 +800,8 @@ int ArangoServer::startupServer () {
     }
   }
 
+  startupProgress();
+
   // fetch the system database
   TRI_vocbase_t* vocbase = TRI_UseDatabaseServer(_server, TRI_VOC_SYSTEM_DATABASE);
 
@@ -794,6 +811,7 @@ int ArangoServer::startupServer () {
 
   TRI_ASSERT(vocbase != nullptr);
 
+  startupProgress();
 
   // initialise V8
   if (! _applicationServer->programOptions().has("javascript.v8-contexts")) {
@@ -819,6 +837,8 @@ int ArangoServer::startupServer () {
     }
   }
 
+  startupProgress();
+
   _applicationV8->setVocbase(vocbase);
   _applicationV8->setConcurrency(_v8Contexts);
   _applicationV8->defineDouble("DISPATCHER_THREADS", _dispatcherThreads);
@@ -827,6 +847,8 @@ int ArangoServer::startupServer () {
   // .............................................................................
   // prepare everything
   // .............................................................................
+
+  startupProgress();
 
   if (! startServer) {
     _applicationScheduler->disable();
@@ -838,26 +860,37 @@ int ArangoServer::startupServer () {
   // prepare scheduler and dispatcher
   _applicationServer->prepare();
 
+  startupProgress();
+
   // now we can create the queues
   if (startServer) {
     _applicationDispatcher->buildStandardQueue(_dispatcherThreads, (int) _dispatcherQueueSize);
   }
 
+  startupProgress();
+
   // and finish prepare
   _applicationServer->prepare2();
+
+  startupProgress();
 
   // run version check (will exit!)
   if (checkVersion) {
     _applicationV8->versionCheck();
   }
 
+  startupProgress();
+
   _applicationV8->upgradeDatabase(skipUpgrade, performUpgrade);
+
+  startupProgress();
 
   // setup the V8 actions
   if (startServer) {
     _applicationV8->prepareServer();
   }
 
+  startupProgress();
 
   _pairForAql = new std::pair<ApplicationV8*, aql::QueryRegistry*>;
   _pairForAql->first = _applicationV8;
@@ -891,6 +924,8 @@ int ArangoServer::startupServer () {
       (void*) &httpOptions);
   }
 
+  startupProgress();
+
   // .............................................................................
   // start the main event loop
   // .............................................................................
@@ -916,6 +951,8 @@ int ArangoServer::startupServer () {
 
   LOG_INFO("ArangoDB (version " TRI_VERSION_FULL ") is ready for business. Have fun!");
 
+  startupFinished();
+
   int res;
 
   if (mode == OperationMode::MODE_CONSOLE) {
@@ -930,6 +967,8 @@ int ArangoServer::startupServer () {
   else {
     res = runServer(vocbase);
   }
+
+  shutDownBegins ();
 
   _applicationServer->stop();
 

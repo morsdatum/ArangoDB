@@ -109,8 +109,8 @@
 ///   Will be raised when an error occurred during WAL log file recovery.
 /// - 1100: @LIT{corrupted datafile}
 ///   Will be raised when a corruption is detected in a datafile.
-/// - 1101: @LIT{illegal parameter file}
-///   Will be raised if a parameter file is corrupted.
+/// - 1101: @LIT{illegal or unreadable parameter file}
+///   Will be raised if a parameter file is corrupted or cannot be read.
 /// - 1102: @LIT{corrupted collection}
 ///   Will be raised when a collection contains one or more corrupted data
 ///   files.
@@ -601,6 +601,8 @@
 ///   No foxx found at this location
 /// - 3009: @LIT{App not found}
 ///   No app found at this mountpoint
+/// - 3010: @LIT{App not configured}
+///   The app has to be configured before it can be used
 /// - 10000: @LIT{element not inserted into structure, because it already exists}
 ///   Will be returned if the element was not insert because it already exists.
 /// - 10001: @LIT{element not found in structure}
@@ -1110,9 +1112,9 @@ void TRI_InitialiseErrorMessages ();
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief 1101: ERROR_ARANGO_ILLEGAL_PARAMETER_FILE
 ///
-/// illegal parameter file
+/// illegal or unreadable parameter file
 ///
-/// Will be raised if a parameter file is corrupted.
+/// Will be raised if a parameter file is corrupted or cannot be read.
 ////////////////////////////////////////////////////////////////////////////////
 
 #define TRI_ERROR_ARANGO_ILLEGAL_PARAMETER_FILE                           (1101)
@@ -3188,6 +3190,16 @@ void TRI_InitialiseErrorMessages ();
 ////////////////////////////////////////////////////////////////////////////////
 
 #define TRI_ERROR_APP_NOT_FOUND                                           (3009)
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief 3010: ERROR_APP_NEEDS_CONFIGURATION
+///
+/// App not configured
+///
+/// The app has to be configured before it can be used
+////////////////////////////////////////////////////////////////////////////////
+
+#define TRI_ERROR_APP_NEEDS_CONFIGURATION                                 (3010)
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief 10000: RESULT_ELEMENT_EXISTS

@@ -264,8 +264,10 @@
       throwFileNotFound("Cannot find file: " + appInfo + ".");
     }
     var filePath;
+    var shouldDelete = false;
     if (fs.isDirectory(appInfo)) {
       filePath = utils.zipDirectory(appInfo);
+      shouldDelete = true;
     }
     if (fs.isFile(appInfo)) {
       filePath = appInfo;
@@ -274,11 +276,13 @@
       throwBadParameter("Invalid file: " + appInfo + ". Has to be a direcotry or zip archive");
     }
     var response = arango.SEND_FILE("/_api/upload", filePath);
-    try {
-      fs.remove(filePath);
-    }
-    catch (err2) {
-      arangodb.printf("Cannot remove temporary file '%s'\n", filePath);
+    if (shouldDelete) {
+      try {
+        fs.remove(filePath);
+      }
+      catch (err2) {
+        arangodb.printf("Cannot remove temporary file '%s'\n", filePath);
+      }
     }
     if (! response.filename) {
       throw new ArangoError({
@@ -603,7 +607,8 @@
              res.mount);
           break;
         case "configure":
-          res = configure(args[1]);
+          options = extractOptions(args);
+          res = configure(args[1], options);
           printf("Reconfigured Application %s version %s on mount point %s\n",
              res.name,
              res.version,

@@ -95871,6 +95871,7 @@ if (typeof internal.arango !== 'undefined') {
     "ERROR_INVALID_MOUNTPOINT"     : { "code" : 3007, "message" : "mountpoint is invalid" },
     "ERROR_NO_FOXX_FOUND"          : { "code" : 3008, "message" : "No foxx found at this location" },
     "ERROR_APP_NOT_FOUND"          : { "code" : 3009, "message" : "App not found" },
+    "ERROR_APP_NEEDS_CONFIGURATION" : { "code" : 3010, "message" : "App not configured" },
     "RESULT_ELEMENT_EXISTS"        : { "code" : 10000, "message" : "element not inserted into structure, because it already exists" },
     "RESULT_ELEMENT_NOT_FOUND"     : { "code" : 10001, "message" : "element not found in structure" },
     "ERROR_APP_ALREADY_EXISTS"     : { "code" : 20000, "message" : "newest version of app already installed" },
@@ -99626,6 +99627,22 @@ window.Users = Backbone.Model.extend({
   });
 }());
 
+/*global window, Backbone */
+(function() {
+  "use strict";
+
+  window.queryManagementModel = Backbone.Model.extend({
+
+    defaults: {
+      id: "",
+      query: "",
+      started: "",
+      runTime: ""
+    }
+
+  });
+}());
+
 /*jshint browser: true */
 /*jshint unused: false */
 /*global Backbone, window, $, _ */
@@ -101107,6 +101124,55 @@ window.ArangoUsers = Backbone.Collection.extend({
   window.NotificationCollection = Backbone.Collection.extend({
     model: window.Notification,
     url: ""
+  });
+}());
+
+/*jshint browser: true */
+/*jshint unused: false */
+/*global window, Backbone, $ */
+(function() {
+  "use strict";
+  window.QueryManagementActive = Backbone.Collection.extend({
+
+    model: window.queryManagementModel,
+
+    url: function() {
+      return '/_api/query/current';
+    },
+
+    killRunningQuery: function(id, callback) {
+      var self = this;
+      $.ajax({
+        url: '/_api/query/'+encodeURIComponent(id),
+        type: 'DELETE',
+        success: function(result) {
+          callback();
+        }
+      });
+    }
+
+  });
+}());
+
+/*jshint browser: true */
+/*jshint unused: false */
+/*global window, Backbone, $ */
+(function() {
+  "use strict";
+  window.QueryManagementSlow = Backbone.Collection.extend({
+    model: window.queryManagementModel,
+    url: "/_api/query/slow",
+
+    deleteSlowQueryHistory: function(callback) {
+      var self = this;
+      $.ajax({
+        url: self.url,
+        type: 'DELETE',
+        success: function(result) {
+          callback();
+        }
+      });
+    }
   });
 }());
 
@@ -103518,6 +103584,15 @@ window.ArangoUsers = Backbone.Collection.extend({
 
 (function() {
   "use strict";
+
+  var createDocumentLink = function(id) {
+    var split = id.split("/");
+    return "collection/"
+      + encodeURIComponent(split[0]) + "/"
+      + encodeURIComponent(split[1]);
+
+  };
+
   window.DocumentView = Backbone.View.extend({
     el: '#content',
     colid: 0,
@@ -103531,13 +103606,12 @@ window.ArangoUsers = Backbone.Collection.extend({
       "click #confirmDeleteDocument" : "deleteDocument",
       "click #document-from" : "navigateToDocument",
       "click #document-to" : "navigateToDocument",
-      "dblclick #documentEditor tr" : "addProperty",
-      "focusout .ace_editor": "parseInvalidJson"
+      "dblclick #documentEditor tr" : "addProperty"
     },
 
     editor: 0,
 
-    typeCheck: function (type) {
+    setType: function (type) {
       var result, type2;
       if (type === 'edge') {
         result = this.collection.getEdge(this.colid, this.docid);
@@ -103548,6 +103622,7 @@ window.ArangoUsers = Backbone.Collection.extend({
         type2 = "Document: ";
       }
       if (result === true) {
+        this.type = type;
         this.fillInfo(type2);
         this.fillEditor();
         return true;
@@ -103607,11 +103682,12 @@ window.ArangoUsers = Backbone.Collection.extend({
     },
 
     fillInfo: function(type) {
-      var _id = this.collection.first().get("_id"),
-      _key = this.collection.first().get("_key"),
-      _rev = this.collection.first().get("_rev"),
-      _from = this.collection.first().get("_from"),
-      _to = this.collection.first().get("_to");
+      var mod = this.collection.first();
+      var _id = mod.get("_id"),
+        _key = mod.get("_key"),
+        _rev = mod.get("_rev"),
+        _from = mod.get("_from"),
+        _to = mod.get("_to");
 
       $('#document-type').text(type);
       $('#document-id').text(_id);
@@ -103620,13 +103696,8 @@ window.ArangoUsers = Backbone.Collection.extend({
 
       if (_from && _to) {
 
-        var hrefFrom = "collection/"
-        + encodeURIComponent(_from.split("/")[0]) + "/"
-        + encodeURIComponent(_from.split("/")[1]);
-        var hrefTo = "collection/"
-        + encodeURIComponent(_to.split("/")[0]) + "/"
-        + encodeURIComponent(_to.split("/")[1]);
-
+        var hrefFrom = createDocumentLink(_from);
+        var hrefTo = createDocumentLink(_to);
         $('#document-from').text(_from);
         $('#document-from').attr("documentLink", hrefFrom);
         $('#document-to').text(_to);
@@ -103703,25 +103774,19 @@ window.ArangoUsers = Backbone.Collection.extend({
     },
 
     removeReadonlyKeys: function (object) {
-      delete object._key;
-      delete object._rev;
-      delete object._id;
-      delete object._from;
-      delete object._to;
-      return object;
+      return _.omit(object, ["_key", "_id", "_from", "_to", "_rev"]);
     },
 
     saveDocument: function () {
-      var model, result, fixedJSON;
+      var model, result;
 
       try {
-        model = this.editor.getText();
-        fixedJSON = model.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2": ');
-        model = JSON.parse(fixedJSON);
+        model = this.editor.get();
       }
       catch (e) {
         this.errorConfirmation();
         this.disableSaveButton();
+        return;
       }
 
       model = JSON.stringify(model);
@@ -103791,21 +103856,7 @@ window.ArangoUsers = Backbone.Collection.extend({
     escaped: function (value) {
       return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-    },
-
-    parseInvalidJson: function() {
-      var model, fixedJSON;
-
-      try {
-        model = this.editor.getText();
-        fixedJSON = model.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2": ');
-        model = JSON.parse(fixedJSON);
-        this.editor.set(model);
-      }
-      catch (e) {
-      }
     }
-
   });
 }());
 
@@ -107143,6 +107194,215 @@ window.ArangoUsers = Backbone.Collection.extend({
 
 /*jshint browser: true */
 /*jshint unused: false */
+/*global require, exports, Backbone, EJS, $, setTimeout, localStorage, ace, Storage, window, _ */
+/*global _, arangoHelper, templateEngine, jQuery, Joi*/
+
+(function () {
+  "use strict";
+  window.queryManagementView = Backbone.View.extend({
+    el: '#content',
+
+    id: '#queryManagementContent',
+
+    templateActive: templateEngine.createTemplate("queryManagementViewActive.ejs"),
+    templateSlow: templateEngine.createTemplate("queryManagementViewSlow.ejs"),
+    table: templateEngine.createTemplate("arangoTable.ejs"),
+    tabbar: templateEngine.createTemplate("arangoTabbar.ejs"),
+
+    initialize: function () {
+      this.activeCollection = new window.QueryManagementActive();
+      this.slowCollection = new window.QueryManagementSlow();
+      this.convertModelToJSON(true);
+    },
+
+    events: {
+      "click #arangoQueryManagementTabbar button" : "switchTab",
+      "click #deleteSlowQueryHistory" : "deleteSlowQueryHistoryModal",
+      "click #arangoQueryManagementTable .fa-minus-circle" : "deleteRunningQueryModal"
+    },
+
+    tabbarElements: {
+      id: "arangoQueryManagementTabbar",
+      titles: [
+        ["Active", "activequeries"],
+        ["Slow", "slowqueries"]
+      ]
+    },
+
+    tableDescription: {
+      id: "arangoQueryManagementTable",
+      titles: ["ID", "Query String", "Runtime", "Started", ""],
+      rows: [],
+      unescaped: [false, false, false, false, true]
+    },
+
+    switchTab: function(e) {
+      if (e.currentTarget.id === 'activequeries') {
+        this.convertModelToJSON(true);
+      }
+      else if (e.currentTarget.id === 'slowqueries') {
+        this.convertModelToJSON(false);
+      }
+    },
+
+    deleteRunningQueryModal: function(e) {
+      this.killQueryId = $(e.currentTarget).attr('data-id');
+      var buttons = [], tableContent = [];
+
+      tableContent.push(
+        window.modalView.createReadOnlyEntry(
+          undefined,
+          "Running Query",
+          'Do you want to kill the running query?',
+          undefined,
+          undefined,
+          false,
+          undefined
+        )
+      );
+
+      buttons.push(
+        window.modalView.createDeleteButton('Kill', this.killRunningQuery.bind(this))
+      );
+
+      window.modalView.show(
+        'modalTable.ejs',
+        'Kill Running Query',
+        buttons,
+        tableContent
+      );
+
+      $('.modal-delete-confirmation strong').html('Really kill?');
+
+    },
+
+    killRunningQuery: function() {
+      this.collection.killRunningQuery(this.killQueryId, this.killRunningQueryCallback.bind(this));
+      window.modalView.hide();
+    },
+
+    killRunningQueryCallback: function() {
+      this.convertModelToJSON(true);
+      this.renderActive();
+    },
+
+    deleteSlowQueryHistoryModal: function() {
+      var buttons = [], tableContent = [];
+
+      tableContent.push(
+        window.modalView.createReadOnlyEntry(
+          undefined,
+          "Slow Query Log",
+          'Do you want to delete the slow query log entries?',
+          undefined,
+          undefined,
+          false,
+          undefined
+        )
+      );
+
+      buttons.push(
+        window.modalView.createDeleteButton('Delete', this.deleteSlowQueryHistory.bind(this))
+      );
+
+      window.modalView.show(
+        'modalTable.ejs',
+        'Delete Slow Query Log',
+        buttons,
+        tableContent
+      );
+    },
+
+    deleteSlowQueryHistory: function() {
+      this.collection.deleteSlowQueryHistory(this.slowQueryCallback.bind(this));
+      window.modalView.hide();
+    },
+
+    slowQueryCallback: function() {
+      this.convertModelToJSON(false);
+      this.renderSlow();
+    },
+
+    render: function() {
+      this.convertModelToJSON(true);
+    },
+
+    renderActive: function() {
+      this.$el.html(this.templateActive.render({}));
+      $(this.id).html(this.tabbar.render({content: this.tabbarElements}));
+      $(this.id).append(this.table.render({content: this.tableDescription}));
+      $('#activequeries').addClass("arango-active-tab");
+    },
+
+    renderSlow: function() {
+      this.$el.html(this.templateSlow.render({}));
+      $(this.id).html(this.tabbar.render({content: this.tabbarElements}));
+      $(this.id).append(this.table.render({
+        content: this.tableDescription,
+      }));
+      $('#slowqueries').addClass("arango-active-tab");
+    },
+
+    convertModelToJSON: function (active) {
+      var self = this;
+      var rowsArray = [];
+
+      if (active === true) {
+        this.collection = this.activeCollection;
+      }
+      else {
+        this.collection = this.slowCollection;
+      }
+
+      this.collection.fetch({
+        success: function () {
+          self.collection.each(function (model) {
+
+          var button = '';
+            if (active) {
+              button = '<i data-id="'+model.get('id')+'" class="fa fa-minus-circle"></i>';
+            }
+            rowsArray.push([
+              model.get('id'),
+              model.get('query'),
+              model.get('runTime').toFixed(2) + ' s',
+              model.get('started'),
+              button
+            ]);
+          });
+
+          var message = "No running queries.";
+          if (!active) {
+            message = "No slow queries.";
+          }
+
+          if (rowsArray.length === 0) {
+            rowsArray.push([
+              message,
+              "",
+              "",
+              ""
+            ]);
+          }
+
+          self.tableDescription.rows = rowsArray;
+
+          if (active) {
+            self.renderActive();
+          }
+          else {
+            self.renderSlow();
+          }
+        }
+      });
+
+    }
+
+  });
+}());
+
+/*jshint browser: true */
+/*jshint unused: false */
 /*global require, exports, Backbone, EJS, $, setTimeout, localStorage, ace, Storage, window, _, console */
 /*global _, arangoHelper, templateEngine, jQuery, Joi, d3*/
 
@@ -109072,6 +109332,7 @@ window.ArangoUsers = Backbone.Collection.extend({
       "collection/:colid/:docid": "document",
       "shell": "shell",
       "query": "query",
+      "queryManagement": "queryManagement",
       "api": "api",
       "databases": "databases",
       "applications": "applications",
@@ -109231,8 +109492,7 @@ window.ArangoUsers = Backbone.Collection.extend({
       this.documentView.docid = docid;
       this.documentView.render();
       var type = arangoHelper.collectionApiType(colid);
-      this.documentView.type = type;
-      this.documentView.typeCheck(type);
+      this.documentView.setType(type);
     },
 
     shell: function () {
@@ -109251,6 +109511,16 @@ window.ArangoUsers = Backbone.Collection.extend({
       }
       this.queryView.render();
       this.naviView.selectMenuItem('query-menu');
+    },
+
+    queryManagement: function () {
+      if (!this.queryManagementView) {
+        this.queryManagementView = new window.queryManagementView({
+          collection: undefined
+        });
+      }
+      this.queryManagementView.render();
+      this.naviView.selectMenuItem('tools-menu');
     },
 
     api: function () {

@@ -71,7 +71,7 @@ ERROR_ARANGO_RECOVERY,1008,"logfile recovery error","Will be raised when an erro
 ################################################################################
 
 ERROR_ARANGO_CORRUPTED_DATAFILE,1100,"corrupted datafile","Will be raised when a corruption is detected in a datafile."
-ERROR_ARANGO_ILLEGAL_PARAMETER_FILE,1101,"illegal parameter file","Will be raised if a parameter file is corrupted."
+ERROR_ARANGO_ILLEGAL_PARAMETER_FILE,1101,"illegal or unreadable parameter file","Will be raised if a parameter file is corrupted or cannot be read."
 ERROR_ARANGO_CORRUPTED_COLLECTION,1102,"corrupted collection","Will be raised when a collection contains one or more corrupted data files."
 ERROR_ARANGO_MMAP_FAILED,1103,"mmap failed","Will be raised when the system call mmap failed."
 ERROR_ARANGO_FILESYSTEM_FULL,1104,"filesystem full","Will be raised when the filesystem is full."
@@ -359,6 +359,7 @@ ERROR_SYNTAX_ERROR_IN_SCRIPT,3006,"syntax error in script"," contains a syntax e
 ERROR_INVALID_MOUNTPOINT,3007,"mountpoint is invalid","mountpoint is invalid"
 ERROR_NO_FOXX_FOUND,3008,"No foxx found at this location","No foxx found at this location"
 ERROR_APP_NOT_FOUND,3009,"App not found","No app found at this mountpoint"
+ERROR_APP_NEEDS_CONFIGURATION,3010,"App not configured","The app has to be configured before it can be used"
 
 
 ################################################################################

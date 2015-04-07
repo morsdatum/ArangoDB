@@ -1786,6 +1786,11 @@ static bool OpenIterator (TRI_df_marker_t const* marker,
     res = OpenIteratorHandleAbortMarker(marker, datafile, (open_iterator_state_t*) data);
   }
   else {
+    if (marker->_type == TRI_DF_MARKER_HEADER) {
+      // ensure there is a datafile info entry for each datafile of the collection
+      TRI_FindDatafileInfoDocumentCollection(document, datafile->_fid, true);
+    }
+
     LOG_TRACE("skipping marker type %lu", (unsigned long) marker->_type);
     res = TRI_ERROR_NO_ERROR;
   }
@@ -2056,7 +2061,7 @@ static bool InitDocumentCollection (TRI_document_collection_t* document,
   document->_cleanupIndexes   = false;
   document->_failedTransactions = nullptr;
 
-  document->_uncollectedLogfileEntries = 0;
+  document->_uncollectedLogfileEntries.store(0);
 
   int res = InitBaseDocumentCollection(document, shaper);
 
@@ -2288,6 +2293,11 @@ TRI_document_collection_t* TRI_CreateDocumentCollection (TRI_vocbase_t* vocbase,
     delete document;
     return nullptr;
   }
+        
+  // remove the temporary file
+  char* tmpfile = TRI_Concatenate2File(collection->_directory, ".tmp");
+  TRI_UnlinkFile(tmpfile);
+  TRI_Free(TRI_CORE_MEM_ZONE, tmpfile);
 
   TransactionBase trx(true);  // just to protect the following call
   TRI_ASSERT(document->getShaper() != nullptr);  // ONLY IN COLLECTION CREATION, PROTECTED by trx here
@@ -2840,7 +2850,8 @@ int TRI_FillIndexesDocumentCollection (TRI_document_collection_t* document) {
 ////////////////////////////////////////////////////////////////////////////////
 
 TRI_document_collection_t* TRI_OpenDocumentCollection (TRI_vocbase_t* vocbase,
-                                                       TRI_vocbase_col_t* col) {
+                                                       TRI_vocbase_col_t* col,
+                                                       bool ignoreErrors) {
   char const* path = col->_path;
 
   // first open the document collection
@@ -2857,7 +2868,7 @@ TRI_document_collection_t* TRI_OpenDocumentCollection (TRI_vocbase_t* vocbase,
 
   TRI_ASSERT(document != nullptr);
 
-  TRI_collection_t* collection = TRI_OpenCollection(vocbase, document, path);
+  TRI_collection_t* collection = TRI_OpenCollection(vocbase, document, path, ignoreErrors);
 
   if (collection == nullptr) {
     delete document;
@@ -3298,7 +3309,7 @@ void TRI_UpdateRevisionDocumentCollection (TRI_document_collection_t* document,
 bool TRI_IsFullyCollectedDocumentCollection (TRI_document_collection_t* document) {
   TRI_READ_LOCK_DOCUMENTS_INDEXES_PRIMARY_COLLECTION(document);
 
-  int64_t uncollected = document->_uncollectedLogfileEntries;
+  int64_t uncollected = document->_uncollectedLogfileEntries.load();
 
   TRI_READ_UNLOCK_DOCUMENTS_INDEXES_PRIMARY_COLLECTION(document);
 

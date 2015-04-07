@@ -30,8 +30,16 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
 ### @brief arangod
 ################################################################################
 
+if (MSVC)
+  SET(ARANGO_MSVC
+    RestServer/WindowsServiceUtils.cpp
+  )
+endif ()
+
+
 add_executable(
     ${BIN_ARANGOD}
+    ${ARANGO_MSVC}
     Actions/actions.cpp
     Actions/RestActionHandler.cpp
     Aql/AqlItemBlock.cpp
@@ -56,6 +64,7 @@ add_executable(
     Aql/OptimizerRules.cpp
     Aql/Parser.cpp
     Aql/Query.cpp
+    Aql/QueryList.cpp
     Aql/QueryRegistry.cpp
     Aql/RangeInfo.cpp
     Aql/Range.cpp

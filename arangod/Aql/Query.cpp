@@ -34,6 +34,7 @@
 #include "Aql/ExecutionPlan.h"
 #include "Aql/Optimizer.h"
 #include "Aql/Parser.h"
+#include "Aql/QueryList.h"
 #include "Basics/JsonHelper.h"
 #include "Basics/json.h"
 #include "Basics/tri-strings.h"
@@ -52,6 +53,10 @@ using Json = triagens::basics::Json;
 // -----------------------------------------------------------------------------
 // --SECTION--                                               static const values
 // -----------------------------------------------------------------------------
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief names of query phases / states
+////////////////////////////////////////////////////////////////////////////////
 
 static std::string StateNames[] = {
   "initializing",           // INITIALIZATION 
@@ -75,9 +80,40 @@ static_assert(sizeof(StateNames) / sizeof(std::string) == static_cast<size_t>(Ex
 /// @brief create a profile
 ////////////////////////////////////////////////////////////////////////////////
       
-Profile::Profile () 
-  : results(static_cast<size_t>(INVALID_STATE)),
-    stamp(TRI_microtime()) {
+Profile::Profile (Query* query) 
+  : query(query),
+    results(static_cast<size_t>(INVALID_STATE)),
+    stamp(TRI_microtime()),
+    tracked(false) {
+
+  auto queryList = static_cast<QueryList*>(query->vocbase()->_queries);
+
+  if (queryList != nullptr) {
+    try {
+      tracked = queryList->insert(query, stamp);
+    }
+    catch (...) {
+    }
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief destroy a profile
+////////////////////////////////////////////////////////////////////////////////
+      
+Profile::~Profile () { 
+  // only remove from list when the query was inserted into it...
+  if (tracked) {
+    auto queryList = static_cast<QueryList*>(query->vocbase()->_queries);
+
+    if (queryList != nullptr) {
+      try {
+        queryList->remove(query, stamp);
+      }
+      catch (...) {
+      }
+    }
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -89,7 +125,7 @@ void Profile::enter (ExecutionState state) {
 
   if (state != ExecutionState::INVALID_STATE) {
     // record duration of state
-    results.push_back(std::make_pair(state, now - stamp)); 
+    results.emplace_back(std::make_pair(state, now - stamp)); 
   }
 
   // set timestamp
@@ -112,6 +148,12 @@ TRI_json_t* Profile::toJson (TRI_memory_zone_t*) {
 // --SECTION--                                                       class Query
 // -----------------------------------------------------------------------------
 
+////////////////////////////////////////////////////////////////////////////////
+/// @brief whether or not query tracking is disabled globally
+////////////////////////////////////////////////////////////////////////////////
+          
+bool Query::DoDisableQueryTracking = false;
+
 // -----------------------------------------------------------------------------
 // --SECTION--                                        constructors / destructors
 // -----------------------------------------------------------------------------
@@ -128,7 +170,8 @@ Query::Query (triagens::arango::ApplicationV8* applicationV8,
               TRI_json_t* bindParameters,
               TRI_json_t* options,
               QueryPart part)
-  : _applicationV8(applicationV8),
+  : _id(TRI_NextQueryIdVocBase(vocbase)),
+    _applicationV8(applicationV8),
     _vocbase(vocbase),
     _executor(nullptr),
     _context(nullptr),
@@ -149,15 +192,14 @@ Query::Query (triagens::arango::ApplicationV8* applicationV8,
     _maxWarningCount(10),
     _warnings(),
     _part(part),
-    _contextOwnedByExterior(contextOwnedByExterior) {
+    _contextOwnedByExterior(contextOwnedByExterior),
+    _killed(false) {
 
   // std::cout << TRI_CurrentThreadId() << ", QUERY " << this << " CTOR: " << queryString << "\n";
 
   TRI_ASSERT(_vocbase != nullptr);
 
-  if (profiling()) {
-    _profile = new Profile;
-  }
+  _profile = new Profile(this);
   enterState(INITIALIZATION);
   
   _ast = new Ast(this);
@@ -175,7 +217,8 @@ Query::Query (triagens::arango::ApplicationV8* applicationV8,
               triagens::basics::Json queryStruct,
               TRI_json_t* options,
               QueryPart part)
-  : _applicationV8(applicationV8),
+  : _id(TRI_NextQueryIdVocBase(vocbase)),
+    _applicationV8(applicationV8),
     _vocbase(vocbase),
     _executor(nullptr),
     _context(nullptr),
@@ -196,15 +239,14 @@ Query::Query (triagens::arango::ApplicationV8* applicationV8,
     _maxWarningCount(10),
     _warnings(),
     _part(part),
-    _contextOwnedByExterior(contextOwnedByExterior) {
+    _contextOwnedByExterior(contextOwnedByExterior),
+    _killed(false) {
 
   // std::cout << TRI_CurrentThreadId() << ", QUERY " << this << " CTOR (JSON): " << _queryJson.toString() << "\n";
 
   TRI_ASSERT(_vocbase != nullptr);
 
-  if (profiling()) {
-    _profile = new Profile;
-  }
+  _profile = new Profile(this);
   enterState(INITIALIZATION);
 
   _ast = new Ast(this);
@@ -619,7 +661,7 @@ QueryResult Query::execute (QueryRegistry* registry) {
     result.json     = jsonResult.steal();
     result.stats    = stats.steal(); 
 
-    if (_profile != nullptr) {
+    if (_profile != nullptr && profiling()) {
       result.profile = _profile->toJson(TRI_UNKNOWN_MEM_ZONE);
     }
 
@@ -691,7 +733,7 @@ QueryResultV8 Query::executeV8 (v8::Isolate* isolate, QueryRegistry* registry) {
     result.warnings = warningsToJson(TRI_UNKNOWN_MEM_ZONE);
     result.stats    = stats.steal(); 
 
-    if (_profile != nullptr) {
+    if (_profile != nullptr && profiling()) {
       result.profile = _profile->toJson(TRI_UNKNOWN_MEM_ZONE);
     }
 

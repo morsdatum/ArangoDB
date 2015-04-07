@@ -83,7 +83,7 @@
   ////////////////////////////////////////////////////////////////////////////////
 
   var filterAppRoots = function(folder) {
-    return /APP$/i.test(folder);
+    return /[\\\/]APP$/i.test(folder) && !/(APP[\\\/])(.*)APP$/i.test(folder);
   };
 
   ////////////////////////////////////////////////////////////////////////////////
@@ -155,7 +155,8 @@
   ////////////////////////////////////////////////////////////////////////////////
 
   var routes = function(mount) {
-    return routeApp(lookupApp(mount));
+    var app = lookupApp(mount);
+    return routeApp(app);
   };
 
   ////////////////////////////////////////////////////////////////////////////////
@@ -291,7 +292,6 @@
       mf = JSON.parse(fs.read(file));
     } catch (err) {
       msg = "Cannot parse app manifest '" + file + "': " + String(err);
-      console.errorLines(msg);
       throw new ArangoError({
         errorNum: errors.ERROR_INVALID_APPLICATION_MANIFEST.code,
         errorMessage: errors.ERROR_INVALID_APPLICATION_MANIFEST.message
@@ -299,6 +299,19 @@
     }
     try {
       checkManifest(file, mf);
+      if (!/^[a-zA-Z\-_][a-zA-Z0-9\-_]*$/.test(mf.name)) {
+        throw new ArangoError({
+          errorNum: errors.ERROR_INVALID_APPLICATION_MANIFEST.code,
+          errorMessage: "The App name can only contain a to z, A to Z, 0-9, '-' and '_'." 
+        });
+      }
+      if (!/^\d+\.\d+(\.\d+)?$$/.test(mf.version)) {
+        throw new ArangoError({
+          errorNum: errors.ERROR_INVALID_APPLICATION_MANIFEST.code,
+          errorMessage: "The version requires the format: <major>.<minor>.<bugfix>, all have to be integer numbers." 
+        });
+
+      }
     } catch (err) {
       console.error("Manifest file '%s' is invald: %s", file, err.errorMessage);
       if (err.hasOwnProperty("stack")) {
@@ -817,8 +830,10 @@
     try {
       _buildAppInPath(appInfo, tempPath, {});
       var tmp = new ArangoApp(fakeAppConfig(tempPath));
-      routeApp(tmp);
-      exportApp(tmp);
+      if (!tmp.needsConfiguration()) {
+        routeApp(tmp, true);
+        exportApp(tmp);
+      }
     } catch (e) {
       throw e;
     } finally {
@@ -859,10 +874,12 @@
       if (runSetup) {
         setup(mount);
       }
-      // Validate Routing
-      routeApp(app);
-      // Validate Exports
-      exportApp(app);
+      if (!app.needsConfiguration()) {
+        // Validate Routing
+        routeApp(app, true);
+        // Validate Exports
+        exportApp(app);
+      }
     } catch (e) {
       try {
         fs.removeDirectoryRecursive(targetPath, true);
@@ -1186,6 +1203,14 @@
         }
       }
     }
+    var oldApp = lookupApp(mount);
+    var oldConf = oldApp.getConfiguration(true);
+    options.configuration = options.configuration || {};
+    for (var attr in oldConf) {
+      if (oldConf.hasOwnProperty(attr) && !options.configuration.hasOwnProperty(attr)) {
+        options.configuration[attr] = oldConf[attr];
+      }
+    }
     _uninstall(mount, {teardown: false,
       __clusterDistribution: options.__clusterDistribution || false,
       force: !options.__clusterDistribution
@@ -1264,10 +1289,10 @@
       [ mount ] );
     utils.validateMount(mount, true);
     var app = lookupApp(mount);
-    var invalid = app.configure(options);
+    var invalid = app.configure(options.configuration || {});
     if (invalid.length > 0) {
       // TODO Error handling
-      require("console").log(invalid);
+      console.log(invalid);
     }
     utils.updateApp(mount, app.toJSON());
     reloadRouting();

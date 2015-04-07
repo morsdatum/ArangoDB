@@ -129,13 +129,11 @@
         <dt>Links</dt>
         <dd>
           <ul>
-            <% if (!app.attributes.development) { %>
-              <li>
-                <a href="./swagger/<%= encodeURIComponent(encodeURIComponent(app.attributes.mount)) %>" target="_blank">
-                  Download API Documentation
-                </a>
-              </li>
-            <% } %>
+            <li>
+              <a href="./foxxes/docu<%= app.attributes.mount %>" target="_blank">
+                Download API Documentation
+              </a>
+            </li>
             <% if (app.attributes.repository && app.attributes.repository.type == 'git') { %>
               <li><a href="<%= app.attributes.repository.url %>" target="_blank">Git Repository</a></li>
             <% } %>
@@ -2166,6 +2164,9 @@ if (list.length > 0) {
         <li class="dropdown-item">
           <a id="userManagement" class="tab" href="#api">User Management</a>
         </li>
+        <li class="dropdown-item">
+          <a id="queryManagement" class="tab" href="#queryManagement">Query Management</a>
+        </li>
       </ul>
     </li>
     <li class="dropdown" id="linkDropdown">
@@ -2261,6 +2262,28 @@ if (list.length > 0) {
       <div class="progress-text"></div>
       <div class="progress-action"></div>
     </div>
+  </div>
+</script>
+
+<script id="queryManagementViewActive.ejs" type="text/template">
+  <div class="headerBar">
+    <a class="arangoHeader">Query Management</a>
+  </div>
+
+  <div id="queryManagementContent" class="innerContent">
+  </div>
+</script>
+
+<script id="queryManagementViewSlow.ejs" type="text/template">
+  <div class="headerBar">
+    <a class="arangoHeader">Query Management</a>
+  </div>
+
+  <div id="queryManagementContent" class="innerContent">
+  </div>
+
+  <div>
+    <button id="deleteSlowQueryHistory" style="margin-top: 5px" class="button-danger query-button">Delete History</button>
   </div>
 </script>
 
@@ -2663,7 +2686,7 @@ var cutByResolution = function (str) {
     </div>
   </footer>
 
-<script src="app.js?version=1425992657857"></script>
+<script src="app.js?version=1426514835926"></script>
 
   </body>
 </html>

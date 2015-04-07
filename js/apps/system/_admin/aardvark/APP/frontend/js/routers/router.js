@@ -16,6 +16,7 @@
       "collection/:colid/:docid": "document",
       "shell": "shell",
       "query": "query",
+      "queryManagement": "queryManagement",
       "api": "api",
       "databases": "databases",
       "applications": "applications",
@@ -175,8 +176,7 @@
       this.documentView.docid = docid;
       this.documentView.render();
       var type = arangoHelper.collectionApiType(colid);
-      this.documentView.type = type;
-      this.documentView.typeCheck(type);
+      this.documentView.setType(type);
     },
 
     shell: function () {
@@ -195,6 +195,16 @@
       }
       this.queryView.render();
       this.naviView.selectMenuItem('query-menu');
+    },
+
+    queryManagement: function () {
+      if (!this.queryManagementView) {
+        this.queryManagementView = new window.queryManagementView({
+          collection: undefined
+        });
+      }
+      this.queryManagementView.render();
+      this.naviView.selectMenuItem('tools-menu');
     },
 
     api: function () {

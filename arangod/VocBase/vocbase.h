@@ -54,6 +54,8 @@ struct TRI_vector_string_s;
 struct TRI_vocbase_defaults_s;
 struct TRI_replication_applier_t;
 
+extern bool IGNORE_DATAFILE_ERRORS;
+
 // -----------------------------------------------------------------------------
 // --SECTION--                                                     public macros
 // -----------------------------------------------------------------------------
@@ -311,6 +313,7 @@ typedef struct TRI_vocbase_s {
 
   // structures for user-defined volatile data
   void*                      _userStructures;
+  void*                      _queries;
 
   TRI_associative_pointer_t  _authInfo;
   TRI_associative_pointer_t  _authCache;
@@ -647,6 +650,12 @@ bool TRI_IsSystemVocBase (TRI_vocbase_t*);
 
 bool TRI_IsAllowedNameVocBase (bool,
                                char const*);
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief returns the next query id
+////////////////////////////////////////////////////////////////////////////////
+
+TRI_voc_tick_t TRI_NextQueryIdVocBase (TRI_vocbase_t*);
 
 #endif
 
