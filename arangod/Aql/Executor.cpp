@@ -33,7 +33,7 @@
 #include "Aql/V8Expression.h"
 #include "Aql/Variable.h"
 #include "Basics/StringBuffer.h"
-#include "Utils/Exception.h"
+#include "Basics/Exceptions.h"
 #include "V8/v8-conv.h"
 #include "V8/v8-globals.h"
 
@@ -110,7 +110,7 @@ std::unordered_map<std::string, Function const> const Executor::FunctionNames{
   { "TO_LIST",                     Function("TO_LIST",                     "AQL_TO_LIST", ".", true, false, true) },
   
   // string functions
-  { "CONCAT",                      Function("CONCAT",                      "AQL_CONCAT", "szl|+", true, false, true) },
+  { "CONCAT",                      Function("CONCAT",                      "AQL_CONCAT", "szl|+", true, false, true, &Functions::Concat) },
   { "CONCAT_SEPARATOR",            Function("CONCAT_SEPARATOR",            "AQL_CONCAT_SEPARATOR", "s,szl|+", true, false, true) },
   { "CHAR_LENGTH",                 Function("CHAR_LENGTH",                 "AQL_CHAR_LENGTH", "s", true, false, true) },
   { "LOWER",                       Function("LOWER",                       "AQL_LOWER", "s", true, false, true) },
@@ -238,7 +238,8 @@ std::unordered_map<std::string, Function const> const Executor::FunctionNames{
 
   // misc functions
   { "FAIL",                        Function("FAIL",                        "AQL_FAIL", "|s", false, true, true) },
-  { "PASSTHRU",                    Function("PASSTHRU",                    "AQL_PASSTHRU", ".", false, false, true) },
+  { "PASSTHRU",                    Function("PASSTHRU",                    "AQL_PASSTHRU", ".", false, false, true, &Functions::Passthru ) },
+  { "NOOPT",                       Function("NOOPT",                       "AQL_PASSTHRU", ".", false, false, true, &Functions::Passthru ) },
   { "SLEEP",                       Function("SLEEP",                       "AQL_SLEEP", "n", false, true, true) },
   { "COLLECTIONS",                 Function("COLLECTIONS",                 "AQL_COLLECTIONS", "", false, true, false) },
   { "NOT_NULL",                    Function("NOT_NULL",                    "AQL_NOT_NULL", ".|+", true, false, true) },
@@ -267,10 +268,7 @@ Executor::Executor () :
 ////////////////////////////////////////////////////////////////////////////////
 
 Executor::~Executor () {
-  if (_buffer != nullptr) {
-    delete _buffer;
-    _buffer = nullptr;
-  }
+  delete _buffer;
 }
 
 // -----------------------------------------------------------------------------
@@ -300,6 +298,8 @@ V8Expression* Executor::generateExpression (AstNode const* node) {
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief executes an expression directly
+/// this method is called during AST optimization and will be used to calculate
+/// values for constant expressions
 ////////////////////////////////////////////////////////////////////////////////
 
 TRI_json_t* Executor::executeExpression (Query* query,
@@ -745,7 +745,7 @@ void Executor::generateCodeFunctionCall (AstNode const* node) {
     }
     else if (conversion == Function::CONVERSION_REQUIRED) {
       // the parameter at the position is not a collection name... fail
-      THROW_ARANGO_EXCEPTION_PARAMS(TRI_ERROR_QUERY_FUNCTION_ARGUMENT_TYPE_MISMATCH, func->internalName.c_str());
+      THROW_ARANGO_EXCEPTION_PARAMS(TRI_ERROR_QUERY_FUNCTION_ARGUMENT_TYPE_MISMATCH, func->externalName.c_str());
     }
     else {
       generateCodeNode(args->getMember(i));

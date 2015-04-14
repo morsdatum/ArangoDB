@@ -30,10 +30,10 @@
 #include "Collection.h"
 #include "Aql/ExecutionEngine.h"
 #include "Basics/StringUtils.h"
+#include "Basics/Exceptions.h"
 #include "Cluster/ClusterInfo.h"
 #include "Cluster/ClusterMethods.h"
 #include "Cluster/ServerState.h"
-#include "Utils/Exception.h"
 #include "VocBase/document-collection.h"
 #include "VocBase/transaction.h"
 #include "VocBase/vocbase.h"
@@ -319,7 +319,13 @@ void Collection::fillIndexesDBServer () const {
       // assign the found local index
       idx->setInternals(data);
 
-      indexes.push_back(idx);
+      try {
+        indexes.emplace_back(idx);
+      }
+      catch (...) {
+        delete idx;
+        throw;
+      }
     }
   }
 }

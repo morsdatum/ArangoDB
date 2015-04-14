@@ -1,5 +1,51 @@
+v2.5.2 (2015-04-11)
+-------------------
+
+* modules stored in _modules are automatically flushed when changed
+
+* added missing query-id parameter in documentation of HTTP DELETE `/_api/query` endpoint
+
+* added iterator for edge index in AQL queries
+
+  this change may lead to less edges being read when used together with a LIMIT clause
+
+* make graph viewer in web interface issue less expensive queries for determining
+  a random vertex from the graph, and for determining vertex attributes
+
+* issue #1285: syntax error, unexpected $undefined near '@_to RETURN obj
+
+  this allows AQL bind parameter names to also start with underscores
+
+* moved /_api/query to C++
+
+* issue #1289: Foxx models created from database documents expose an internal method
+
+* added `Foxx.Repository#exists`
+
+* parallelise initialization of V8 context in multiple threads
+
+* fixed a possible crash when the debug-level was TRACE
+
+* cluster: do not initialize statistics collection on each
+  coordinator, this fixes a race condition at startup
+
+* cluster: fix a startup race w.r.t. the _configuration collection
+
+* search for db:// JavaScript modules only after all local files have been
+  considered, this speeds up the require command in a cluster considerably
+
+* general cluster speedup in certain areas
+
+
 v2.5.1 (2015-03-19)
 -------------------
+
+* fixed bug that caused undefined behavior when an AQL query was killed inside
+  a calculation block 
+
+* fixed memleaks in AQL query cleanup in case out-of-memory errors are thrown
+
+* by default, Debian and RedHat packages are built with debug symbols
 
 * added option `--database.ignore-logfile-errors`
 
@@ -393,7 +439,13 @@ v2.5.0-beta2 (2015-02-23)
 * Standard Errors can now contain custom messages.
 
 
-v2.4.6 (2015-03-XX)
+v2.4.7 (XXXX-XX-XX)
+-------------------
+
+* fixed issue #1282: Geo WITHIN_RECTANGLE for nested lat/lng 
+
+
+v2.4.6 (2015-03-18)
 -------------------
 
 * added option `--database.ignore-logfile-errors`

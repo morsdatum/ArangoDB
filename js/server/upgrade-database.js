@@ -535,7 +535,7 @@ function updateGlobals() {
 
       task: function () {
         return createSystemCollection("_users", { 
-          waitForSync : true, 
+          waitForSync : false, 
           shardKeys: [ "user" ] 
         });
       }
@@ -694,7 +694,7 @@ function updateGlobals() {
 
       task: function () {
         return createSystemCollection("_graphs", {
-          waitForSync : true,
+          waitForSync : false,
           journalSize: 1024 * 1024
         });
       }
@@ -961,7 +961,7 @@ function updateGlobals() {
 
       task: function () {
         return createSystemCollection("_aal", {
-          waitForSync : true,
+          waitForSync : false,
           shardKeys: [ "name", "version" ]
         });
       }
@@ -1100,7 +1100,7 @@ function updateGlobals() {
       description: "create statistics collections",
 
       mode:        [ MODE_PRODUCTION, MODE_DEVELOPMENT ],
-      cluster:     [ CLUSTER_NONE, CLUSTER_LOCAL, CLUSTER_COORDINATOR_GLOBAL ],
+      cluster:     [ CLUSTER_NONE, CLUSTER_COORDINATOR_GLOBAL ],
       database:    [ DATABASE_INIT, DATABASE_UPGRADE ],
 
       task: function () {

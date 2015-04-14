@@ -38,7 +38,7 @@
 #include "Basics/json.h"
 #include "ShapedJson/shaped-json.h"
 #include "VocBase/document-collection.h"
-#include "Utils/Exception.h"
+#include "Basics/Exceptions.h"
 
 using namespace triagens::aql;
 using Json = triagens::basics::Json;
@@ -169,7 +169,7 @@ AqlValue Expression::execute (triagens::arango::AqlTransaction* trx,
         // std::cout << triagens::basics::Json(TRI_UNKNOWN_MEM_ZONE, _node->toJson(TRI_UNKNOWN_MEM_ZONE, true)).toString()<< "\n";
         return _func->execute(isolate, _ast->query(), trx, docColls, argv, startPos, vars, regs);
       }
-      catch (triagens::arango::Exception& ex) {
+      catch (triagens::basics::Exception& ex) {
         if (_ast->query()->verboseErrors()) {
           ex.addToMessage(" while evaluating expression ");
           auto json = _node->toJson(TRI_UNKNOWN_MEM_ZONE, false);
@@ -245,7 +245,7 @@ bool Expression::findInList (AqlValue const& left,
                              AstNode const* node) const {
   TRI_ASSERT_EXPENSIVE(right.isArray());
  
-  size_t const n = right.listSize();
+  size_t const n = right.arraySize();
 
   if (node->getMember(1)->isSorted()) {
     // node values are sorted. can use binary search
@@ -391,7 +391,7 @@ AqlValue Expression::executeSimpleExpression (AstNode const* node,
                                               TRI_document_collection_t const** collection, 
                                               triagens::arango::AqlTransaction* trx,
                                               std::vector<TRI_document_collection_t const*>& docColls,
-                                              std::vector<AqlValue>& argv,
+                                              std::vector<AqlValue> const& argv,
                                               size_t startPos,
                                               std::vector<Variable*> const& vars,
                                               std::vector<RegisterId> const& regs) {
@@ -582,8 +582,10 @@ AqlValue Expression::executeSimpleExpression (AstNode const* node,
 
     TRI_document_collection_t const* myCollection = nullptr;
     auto member = node->getMember(0);
-    AqlValue result = executeSimpleExpression(member, &myCollection, trx, docColls, argv, startPos, vars, regs);
+    TRI_ASSERT(member->type == NODE_TYPE_ARRAY);
 
+    AqlValue result = executeSimpleExpression(member, &myCollection, trx, docColls, argv, startPos, vars, regs);
+        
     auto res2 = func->implementation(trx, myCollection, result);
     result.destroy();
     return res2;

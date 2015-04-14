@@ -1568,6 +1568,16 @@ static void JS_Load (const v8::FunctionCallbackInfo<v8::Value>& args) {
   }
 
   v8::Handle<v8::Value> filename = args[0];
+    
+  // save state of __dirname and __filename
+  v8::Handle<v8::Object> current = isolate->GetCurrentContext()->Global();
+  auto oldFilename = current->Get(TRI_V8_ASCII_STRING("__filename"));
+  current->ForceSet(TRI_V8_ASCII_STRING("__filename"), filename);
+  
+  auto oldDirname = current->Get(TRI_V8_ASCII_STRING("__dirname"));
+  auto dirname = TRI_Dirname(TRI_ObjectToString(filename).c_str());
+  current->ForceSet(TRI_V8_ASCII_STRING("__dirname"), TRI_V8_STRING(dirname));
+  TRI_FreeString(TRI_CORE_MEM_ZONE, dirname);
 
   v8::Handle<v8::Value> result =
     TRI_ExecuteJavaScriptString(isolate,
@@ -1575,6 +1585,20 @@ static void JS_Load (const v8::FunctionCallbackInfo<v8::Value>& args) {
                                 TRI_V8_PAIR_STRING(content, length),
                                 filename->ToString(),
                                 false);
+ 
+  // restore old values for __dirname and __filename
+  if (oldFilename.IsEmpty() || oldFilename->IsUndefined()) {
+    current->ForceDelete(TRI_V8_ASCII_STRING("__filename"));
+  }
+  else {
+    current->ForceSet(TRI_V8_ASCII_STRING("__filename"), oldFilename);
+  }
+  if (oldDirname.IsEmpty() || oldDirname->IsUndefined()) {
+    current->ForceDelete(TRI_V8_ASCII_STRING("__dirname"));
+  }
+  else {
+    current->ForceSet(TRI_V8_ASCII_STRING("__dirname"), oldDirname);
+  }
 
   TRI_FreeString(TRI_UNKNOWN_MEM_ZONE, content);
   TRI_V8_RETURN(result);
@@ -2937,8 +2961,6 @@ static void JS_DebugRemoveFailAt (const v8::FunctionCallbackInfo<v8::Value>& arg
 /// Remove all points for intentional system failures
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifdef TRI_ENABLE_FAILURE_TESTS
-
 static void JS_DebugClearFailAt (const v8::FunctionCallbackInfo<v8::Value>& args) {
   v8::Isolate* isolate = args.GetIsolate();
   v8::HandleScope scope(isolate);
@@ -2948,12 +2970,13 @@ static void JS_DebugClearFailAt (const v8::FunctionCallbackInfo<v8::Value>& args
     TRI_V8_THROW_EXCEPTION_USAGE("debugClearFailAt()");
   }
 
+  // if failure testing is not enabled, this is a no-op
+#ifdef TRI_ENABLE_FAILURE_TESTS
   TRI_ClearFailurePointsDebugging();
+#endif
 
   TRI_V8_RETURN_UNDEFINED();
 }
-
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief returns whether failure points can be used
@@ -4195,8 +4218,8 @@ void TRI_InitV8Utils (v8::Isolate* isolate,
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("SYS_DEBUG_SEGFAULT"), JS_DebugSegfault);
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("SYS_DEBUG_SET_FAILAT"), JS_DebugSetFailAt);
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("SYS_DEBUG_REMOVE_FAILAT"), JS_DebugRemoveFailAt);
-  TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("SYS_DEBUG_CLEAR_FAILAT"), JS_DebugClearFailAt);
 #endif
+  TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("SYS_DEBUG_CLEAR_FAILAT"), JS_DebugClearFailAt);
   TRI_AddGlobalFunctionVocbase(isolate, context, TRI_V8_ASCII_STRING("SYS_DEBUG_CAN_USE_FAILAT"), JS_DebugCanUseFailAt);
 
   // .............................................................................

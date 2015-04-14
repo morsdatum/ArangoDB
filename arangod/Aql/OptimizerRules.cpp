@@ -1757,7 +1757,9 @@ static RangeInfoMapVec* BuildRangeInfo (ExecutionPlan* plan,
                            true);
               rimv->differenceRangeInfo(ri);
               if (ri.isValid()) { 
-                rimv->emplace_back(new RangeInfoMap(ri));
+                std::unique_ptr<RangeInfoMap> temp(new RangeInfoMap(ri));
+                rimv->emplace_back(temp.get());
+                temp.release();
               }
             }
           } 
@@ -1769,7 +1771,9 @@ static RangeInfoMapVec* BuildRangeInfo (ExecutionPlan* plan,
                          true);
             rimv->differenceRangeInfo(ri);
             if (ri.isValid()) { 
-              rimv->emplace_back(new RangeInfoMap(ri));
+              std::unique_ptr<RangeInfoMap> temp(new RangeInfoMap(ri));
+              rimv->emplace_back(temp.get());
+              temp.release();
             }
           }
           enumCollVar = nullptr;
@@ -2498,7 +2502,7 @@ public:
             d->attributevec = simpleExpression.second;
           }
         }
-        _sortNodeData.push_back(d);
+        _sortNodeData.emplace_back(d);
       }
       catch (...) {
         delete d;
@@ -2873,8 +2877,8 @@ struct FilterCondition {
         TRI_ASSERT(lhs->type == NODE_TYPE_VALUE);
         TRI_ASSERT(rhs->type == NODE_TYPE_ATTRIBUTE_ACCESS);
 
-        std::function<void(AstNode const*, std::string&, std::string&)> buildName = 
-          [&] (AstNode const* node, std::string& variableName, std::string& attributeName) -> void {
+        std::function<void(AstNode const*, std::string&, std::string&)> buildName;
+        buildName = [&] (AstNode const* node, std::string& variableName, std::string& attributeName) -> void {
           if (node->type == NODE_TYPE_ATTRIBUTE_ACCESS) {
             buildName(node->getMember(0), variableName, attributeName);
 
@@ -4087,19 +4091,16 @@ int triagens::aql::replaceOrWithInRule (Optimizer* opt,
 
     OrToInConverter converter;
     if (converter.canConvertExpression(cn->expression()->node())) {
-      Expression* expr = nullptr;
       ExecutionNode* newNode = nullptr;
       auto inNode = converter.buildInExpression(plan->getAst());
 
+      Expression* expr = new Expression(plan->getAst(), inNode);
+      
       try {
-        expr = new Expression(plan->getAst(), inNode);
-      }
-      catch (...) {
-        delete inNode;
-        throw;
-      }
+        TRI_IF_FAILURE("OptimizerRules::replaceOrWithInRuleOom") {
+          THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
+        }
 
-      try {
         newNode = new CalculationNode(plan, plan->nextId(), expr, outVar[0]);
       }
       catch (...) {
