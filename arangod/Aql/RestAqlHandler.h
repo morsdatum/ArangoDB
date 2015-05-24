@@ -32,6 +32,7 @@
 
 #include "Basics/Common.h"
 
+#include "Dispatcher/Dispatcher.h"
 #include "Admin/RestBaseHandler.h"
 #include "V8Server/ApplicationV8.h"
 #include "RestServer/VocbaseContext.h"
@@ -87,7 +88,9 @@ namespace triagens {
 /// {@inheritDoc}
 ////////////////////////////////////////////////////////////////////////////////
 
-        std::string const& queue () const;
+        std::string const& queue () const override {
+          return triagens::rest::Dispatcher::AQL_QUEUE_NAME;
+        }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief executes the handler
@@ -200,12 +203,6 @@ namespace triagens {
 
         bool findQuery (std::string const& idString,
                         Query*& query);
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief name of the queue
-////////////////////////////////////////////////////////////////////////////////
-
-        static const std::string QUEUE_NAME;
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief _applicationV8

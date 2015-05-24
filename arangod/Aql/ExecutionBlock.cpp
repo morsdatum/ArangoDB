@@ -33,6 +33,8 @@
 #include "Basics/StringBuffer.h"
 #include "Basics/json-utilities.h"
 #include "Basics/Exceptions.h"
+#include "Dispatcher/DispatcherThread.h"
+#include "Cluster/ClusterMethods.h"
 #include "HashIndex/hash-index.h"
 #include "V8/v8-globals.h"
 #include "VocBase/edge-collection.h"
@@ -2176,13 +2178,16 @@ void IndexRangeBlock::getSkiplistIterator (IndexAndCondition const& ranges) {
   if (_skiplistIterator != nullptr) {
     TRI_FreeSkiplistIterator(_skiplistIterator);
   }
+
   _skiplistIterator = TRI_LookupSkiplistIndex(idx, skiplistOperator, en->_reverse);
+
   if (skiplistOperator != nullptr) {
     TRI_FreeIndexOperator(skiplistOperator);
   }
 
   if (_skiplistIterator == nullptr) {
     int res = TRI_errno();
+
     if (res == TRI_RESULT_ELEMENT_NOT_FOUND) {
       return;
     }
@@ -2201,7 +2206,7 @@ void IndexRangeBlock::readSkiplistIndex (size_t atMost) {
   if (_skiplistIterator == nullptr) {
     return;
   }
-  
+
   try {
     size_t nrSent = 0;
     while (nrSent < atMost && _skiplistIterator !=nullptr) { 
@@ -2218,6 +2223,7 @@ void IndexRangeBlock::readSkiplistIndex (size_t atMost) {
         TRI_IF_FAILURE("IndexRangeBlock::readSkiplistIndex") {
           THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
         }
+        
         _documents.emplace_back(*(indexElement->_document));
         ++nrSent;
         ++_engine->_stats.scannedIndex;
@@ -4588,6 +4594,7 @@ GatherBlock::~GatherBlock () {
 
 int GatherBlock::initialize () {
   ENTER_BLOCK
+  _atDep = 0;
   auto res = ExecutionBlock::initialize();
   
   if (res != TRI_ERROR_NO_ERROR) {
@@ -4640,6 +4647,8 @@ int GatherBlock::initializeCursor (AqlItemBlock* items, size_t pos) {
   if (res != TRI_ERROR_NO_ERROR) {
     return res;
   }
+  
+  _atDep = 0;
  
   if (! _isSimple) {
     for (std::deque<AqlItemBlock*>& x : _gatherBlockBuffer) {
@@ -5867,6 +5876,12 @@ ClusterCommResult* RemoteBlock::sendRequest (
     headers.emplace(make_pair("Shard-Id", _ownName));
   }
 
+  auto currentThread = triagens::rest::DispatcherThread::currentDispatcherThread;
+
+  if (currentThread != nullptr) {
+    triagens::rest::DispatcherThread::currentDispatcherThread->blockThread();
+  }
+
   auto result = cc->syncRequest(clientTransactionId,
                                 coordTransactionId,
                                 _server,
@@ -5877,6 +5892,10 @@ ClusterCommResult* RemoteBlock::sendRequest (
                                 body,
                                 headers,
                                 defaultTimeOut);
+
+  if (currentThread != nullptr) {
+    triagens::rest::DispatcherThread::currentDispatcherThread->unblockThread();
+  }
 
   return result;
   LEAVE_BLOCK

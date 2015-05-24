@@ -527,7 +527,14 @@ int TRI_CreateRecursiveDirectory (char const* path,
   while (*p != '\0') {
     if (*p == TRI_DIR_SEPARATOR_CHAR) {
       if (p - s > 0) {
-
+#ifdef _WIN32
+         // Don't try to create the drive letter as directory:
+        if ((p - copy == 2) &&
+          (s[1] == ':')) {
+          s = p + 1;
+          continue;
+        }
+#endif
         *p = '\0';
         res = TRI_CreateDirectory(copy, systemError, systemErrorStr);
         if ((res == TRI_ERROR_FILE_EXISTS) ||
@@ -1750,6 +1757,218 @@ string TRI_LocateBinaryPath (char const* argv0) {
 
   return result;
 }
+
+bool TRI_CopyFileContents(int srcFD, int dstFD, ssize_t fileSize, std::string& error) {
+  bool rc = true;
+#if TRI_LINUX_SPLICE
+  bool enableSplice = true;
+  if (enableSplice) {
+    int splicePipe[2];
+    ssize_t pipeSize = 0;
+    long chunkSendRemain = fileSize;
+    loff_t totalSentAlready = 0;
+
+    if (pipe(splicePipe) != 0) {
+      error = std::string("splice failed to create pipes: ") + strerror(errno);
+      return false;
+    }
+    while (chunkSendRemain > 0) {
+      if (pipeSize == 0) {
+        pipeSize = splice(srcFD,
+                          &totalSentAlready,
+                          splicePipe[1],
+                          nullptr,
+                          chunkSendRemain,
+                          SPLICE_F_MOVE);
+        if (pipeSize == -1) {
+          error = std::string("splice read failed: ") + strerror(errno);
+          rc = false;
+          break;
+        }
+      }
+      ssize_t sent = splice(splicePipe[0],
+                            nullptr,
+                            dstFD,
+                            nullptr,
+                            pipeSize,
+                            SPLICE_F_MORE | SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+      if (sent == -1) {
+        error = std::string("splice read failed: ") + strerror(errno);
+        rc = false;
+        break;
+      }
+      pipeSize -= sent;
+      chunkSendRemain -= sent;
+    }
+    close(splicePipe[0]);
+    close(splicePipe[1]);
+  }
+  else
+#endif
+  {
+     // 128k:
+#define C128 131072
+    TRI_write_t nRead;
+    TRI_read_t  chunkRemain = fileSize;
+    char* buf = static_cast<char*>(TRI_Allocate (TRI_UNKNOWN_MEM_ZONE, C128, false));
+
+    if (buf == nullptr) {
+      error = "failed to allocate temporary buffer";
+      rc = false;
+    }
+    while (rc && (chunkRemain > 0)) {
+      TRI_read_t readChunk;
+      if (chunkRemain > C128) {
+        readChunk = C128;
+      }
+      else {
+        readChunk = chunkRemain;
+      }
+
+      nRead = TRI_READ(srcFD, buf, readChunk);
+      if (nRead < 1) {
+        error = std::string("failed to read a chunk: ") + strerror(errno);
+        break;
+      }
+
+      if ((TRI_read_t) TRI_WRITE(dstFD, buf, nRead) != nRead) {
+        rc = false;
+        break;
+      }
+
+      chunkRemain -= nRead;
+    }
+
+    TRI_Free (TRI_UNKNOWN_MEM_ZONE, buf);
+  }
+  return rc;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief copies the contents of a file
+////////////////////////////////////////////////////////////////////////////////
+
+bool TRI_CopyFile (std::string const& src, std::string const& dst, std::string &error) {
+#ifdef _WIN32
+  bool rc = CopyFile(src.c_str(), dst.c_str(), false) != 0;
+  if (! rc) {
+    error = "failed to copy " + src + " to " + dst + " : "; /// TODO error
+  }
+  return rc;
+#else
+  size_t dsize;
+  int srcFD, dstFD;
+  struct stat statbuf;
+
+  srcFD = open(src.c_str(), O_RDONLY);
+  if (srcFD < 0) {
+    error = "failed to open source file " + src + ": " + strerror(errno);
+    return false;
+  }
+  dstFD = open(dst.c_str(),
+               O_EXCL | O_CREAT | O_NONBLOCK | O_WRONLY,
+               S_IRUSR | S_IWUSR);
+  if (dstFD < 0) {
+    close(srcFD);
+        error = "failed to open destination file " + dst + ": " + strerror(errno);
+    return false;
+  }
+
+  TRI_FSTAT(srcFD, &statbuf);
+  dsize = statbuf.st_size;
+
+  bool rc = TRI_CopyFileContents(srcFD, dstFD, dsize, error);
+  timeval times[2];
+  memset(times, 0, sizeof(times));
+  times[0].tv_sec = TRI_STAT_ATIME_SEC(statbuf);
+  times[1].tv_sec = TRI_STAT_MTIME_SEC(statbuf);
+
+  if (fchown(dstFD, -1 /*statbuf.st_uid*/, statbuf.st_gid) != 0) {
+    error = std::string("failed to chown ") + dst + ": " + strerror(errno);
+    //rc = false;  no, this is not fatal...
+  }
+  if (fchmod(dstFD, statbuf.st_mode) != 0) {
+    error = std::string("failed to chmod ") + dst + ": " + strerror(errno);
+    rc = false;
+  }
+
+#ifdef HAVE_FUTIMES
+  if (futimes(dstFD, times) != 0) {
+    error = std::string("failed to adjust age: ") + dst + ": " + strerror(errno);
+    rc = false;
+  }
+#else
+  if (utimes(dst.c_str(), times) != 0) {
+    error = std::string("failed to adjust age: ") + dst + ": " + strerror(errno);
+    rc = false;
+  }
+#endif
+  close(srcFD);
+  close(dstFD);
+  return rc;
+#endif
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief copies the filesystem attributes of a file
+////////////////////////////////////////////////////////////////////////////////
+
+bool TRI_CopyAttributes(std::string srcItem, std::string dstItem, std::string &error) {
+#ifndef _WIN32
+  struct stat statbuf;
+
+  TRI_STAT(srcItem.c_str(), &statbuf);
+
+  if (chown(dstItem.c_str(), -1/*statbuf.st_uid*/, statbuf.st_gid) != 0) {
+    error = std::string("failed to chown ") + dstItem + ": " + strerror(errno);
+    //    return false;
+  }
+  if (chmod(dstItem.c_str(), statbuf.st_mode) != 0) {
+    error = std::string("failed to chmod ") + dstItem + ": " + strerror(errno);
+    return false;
+  }
+
+  timeval times[2];
+  memset(times, 0, sizeof(times));
+  times[0].tv_sec = TRI_STAT_ATIME_SEC(statbuf);
+  times[1].tv_sec = TRI_STAT_MTIME_SEC(statbuf);
+
+  if (  utimes(dstItem.c_str(), times) != 0) {
+    error = std::string("failed to adjust age: ") + dstItem + ": " + strerror(errno);
+    return false;
+  }
+  
+#endif
+  return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief copies a symlink; the link target is not altered.
+////////////////////////////////////////////////////////////////////////////////
+
+bool TRI_CopySymlink(std::string srcItem, std::string dstItem, std::string &error) {
+#ifndef _WIN32
+  char buffer[PATH_MAX];
+  ssize_t rc;
+  rc = readlink(srcItem.c_str(), buffer, sizeof(buffer));
+  if (rc == -1) {
+    error = std::string("failed to read symlink ") + srcItem + ": " + strerror(errno);
+    return false;
+  }
+  buffer[rc] = '\0';
+  if (symlink(buffer, dstItem.c_str()) != 0) {
+    error = std::string("failed to create symlink ") +
+      dstItem +
+      " -> " +
+      buffer +
+      ": " +
+      strerror(errno);
+    return false;
+  }
+#endif
+  return true;
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief locates the home directory

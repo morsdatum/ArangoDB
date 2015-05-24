@@ -2,7 +2,8 @@
 /*global require, FS_MAKE_DIRECTORY, FS_MOVE, FS_REMOVE, FS_REMOVE_DIRECTORY, FS_LIST,
   FS_REMOVE_RECURSIVE_DIRECTORY, FS_EXISTS, FS_IS_DIRECTORY, FS_IS_FILE, FS_MAKE_ABSOLUTE, FS_FILESIZE,
   FS_GET_TEMP_FILE, FS_GET_TEMP_PATH, FS_LIST_TREE, FS_UNZIP_FILE, FS_ZIP_FILE, FS_MTIME,
-  SYS_READ, SYS_READ_BUFFER, SYS_READ64, SYS_SAVE, PATH_SEPARATOR, HOME */
+  SYS_READ, SYS_READ_BUFFER, SYS_READ64, SYS_SAVE, PATH_SEPARATOR, HOME,
+  FS_MAKE_DIRECTORY_RECURSIVE, FS_COPY_RECURSIVE */
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief module "js"
@@ -327,7 +328,7 @@
 
       return normalize(paths.filter(function(p) {
         if (typeof p !== 'string') {
-          throw new TypeError('Arguments to path.join must be strings');
+         throw new TypeError('Arguments to path.join must be strings - have ' + JSON.stringify(p));
         }
 
         return p;
@@ -393,33 +394,10 @@
 /// @brief makeDirectoryRecursive
 ////////////////////////////////////////////////////////////////////////////////
 
-  exports.makeDirectoryRecursive = function (path) {
-    'use strict';
-
-    var parts, subPart;
-
-    parts = path.split(exports.pathSeparator);
-    subPart = '';
-
-    parts.forEach(function (s, i) {
-      if (i > 0) {
-        subPart += exports.pathSeparator;
-      }
-      subPart += s;
-      if (subPart.length > 0) {
-        try {
-          // directory may already exist
-          exports.makeDirectory(subPart);
-        }
-        catch (err) {
-          if (err.errorNum !==
-              require("internal").errors.ERROR_FILE_EXISTS.code) {
-            throw(err);
-          }
-        }
-      }
-    });
-  };
+  if (FS_MAKE_DIRECTORY_RECURSIVE !== undefined) {
+    exports.makeDirectoryRecursive = FS_MAKE_DIRECTORY_RECURSIVE;
+    delete FS_MAKE_DIRECTORY_RECURSIVE;
+  }
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief mtime
@@ -430,44 +408,63 @@
     delete FS_MTIME;
   }
 
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief copy recursive
+////////////////////////////////////////////////////////////////////////////////
+
+if (FS_COPY_RECURSIVE) {
+  exports.copyRecursive = FS_COPY_RECURSIVE;
+  delete FS_COPY_RECURSIVE;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief move
 ////////////////////////////////////////////////////////////////////////////////
 
-  if (typeof FS_MOVE !== "undefined") {
-    var move = FS_MOVE;
-    var fs = exports;
-    // File system moving directories fallback function
-    exports.move = function(source, target) {
-      if (fs.isDirectory(source) && !fs.exists(target)) {
-        // File systems cannot move directories correctly
-        var tempFile = fs.getTempFile("zip", false);
-        var tree = fs.listTree(source);
-        var files = [];
-        var i;
-        var filename;
-        for (i = 0;  i < tree.length;  ++i) {
-          filename = fs.join(source, tree[i]);
-          if (fs.isFile(filename)) {
-            files.push(tree[i]);
-          }
-        }
-        var res;
-        if (files.length === 0) {
-          res = fs.makeDirectory(target);
-          fs.removeDirectoryRecursive(source, true);
-        } else {
-          fs.zipFile(tempFile, source, files);
-          res = fs.unzipFile(tempFile, target, false, true);
-          fs.remove(tempFile);
-          fs.removeDirectoryRecursive(source, true);
-        }
-        return res;
-      }
+if (FS_MOVE !== undefined) {
+  var move = FS_MOVE;
+  // File system moving directories fallback function
+  exports.move = function(source, target) {
+    try {
       return move(source, target);
-    };
-    delete FS_MOVE;
-  }
+    }
+    catch (x) {
+
+      if (x.hasOwnProperty('errorNum') && 
+          (x.errorNum === 2 /* errors.ERROR_SYS_ERROR.code */ )) { 
+        try {
+          exports.copyRecursive(source, target);
+          // yes, this only works from the temporary dir
+          try {
+            exports.removeDirectoryRecursive(source);
+          }
+          catch(z){
+            require("console").log("failed to remove source directory: " + z);
+          }
+
+        }
+        catch (y) {
+          try {
+            // try to cleanup the mess we created... 
+            // if it doesn't work out... oh well...
+            exports.removeDirectoryRecursive(target);
+          }
+          catch(v){
+            require("console").log("failed to clean up target directory: " + v);
+          }
+          throw(y);
+        }
+      }
+      else {
+
+        throw(x);
+      }
+    }
+    return true;
+  };
+  delete FS_MOVE;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief read

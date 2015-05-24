@@ -4,13 +4,13 @@ arangosh> graph.male.save({neym: "Jon", _key: "john"});
 { 
   "error" : false, 
   "_id" : "male/john", 
-  "_rev" : "583014224", 
+  "_rev" : "584639931", 
   "_key" : "john" 
 }
 arangosh> graph.male.replace("male/john", {name: "John"});
 { 
   "error" : false, 
   "_id" : "male/john", 
-  "_rev" : "583210832", 
+  "_rev" : "584836539", 
   "_key" : "john" 
 }
