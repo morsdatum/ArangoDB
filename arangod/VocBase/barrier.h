@@ -82,11 +82,10 @@ TRI_barrier_t;
 typedef struct TRI_barrier_blocker_s {
   TRI_barrier_t base;
 
-  void*         _data;
   size_t        _line;
   char const*   _filename;
 
-  bool          _usedByExternal;
+  uint32_t      _usedByExternal;
   bool          _usedByTransaction;
 }
 TRI_barrier_blocker_t;
@@ -192,9 +191,10 @@ bool TRI_ContainsBarrierList (TRI_barrier_list_t* container,
 /// @brief creates a new barrier element
 ////////////////////////////////////////////////////////////////////////////////
 
-#define TRI_CreateBarrierElement(a) TRI_CreateBarrierElementZ((a), __LINE__, __FILE__)
+#define TRI_CreateBarrierElement(a, b) TRI_CreateBarrierElementZ((a), (b), __LINE__, __FILE__)
 
 TRI_barrier_t* TRI_CreateBarrierElementZ (TRI_barrier_list_t* container,
+                                          bool usedByTransaction,
                                           size_t line,
                                           char const* filename);
 
@@ -259,6 +259,18 @@ void TRI_FreeBarrier (TRI_barrier_t* element);
 ////////////////////////////////////////////////////////////////////////////////
 
 void TRI_FreeBarrier (TRI_barrier_blocker_t* element, bool fromTransaction);
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief track usage of a barrier by an external
+////////////////////////////////////////////////////////////////////////////////
+
+void TRI_SetUsedByExternalBarrier (TRI_barrier_blocker_t* element);
+
+////////////////////////////////////////////////////////////////////////////////
+/// @brief track usage of a barrier by a transaction
+////////////////////////////////////////////////////////////////////////////////
+
+void TRI_SetUsedByTransactionBarrier (TRI_barrier_blocker_t* element);
 
 #endif
 
